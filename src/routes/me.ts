@@ -31,6 +31,13 @@ import { buildQuote, calcConversion } from '../lib/spreadEngine';
 import { listDepositInstructions } from '../lib/depositConfig';
 import { requireKyc } from '../middleware/userAuth';
 import { auditLog } from '../middleware/logger';
+import {
+  sendKycSubmitted, sendAdminKycAlert,
+  sendMoneySent, sendMoneyReceived,
+  sendSwapCompleted,
+  sendTransferInitiated,
+} from '../lib/mailer';
+import { assertNotFrozen, FrozenCurrencyError } from '../lib/circuitBreaker';
 
 const router = Router();
 
@@ -106,6 +113,14 @@ router.post('/kyc', async (req: Request, res: Response, next: NextFunction) => {
       res.status(400).json({ success: false, errors: parsed.error.flatten() }); return;
     }
     const record = await submitKyc(req.user!.user_id, parsed.data);
+
+    // Notify user + admin (fire-and-forget)
+    const u = await getUserById(req.user!.user_id).catch(() => null);
+    if (u) {
+      sendKycSubmitted(u.email, u.first_name);
+      sendAdminKycAlert(u.email, u.user_id, `${u.first_name} ${u.last_name}`);
+    }
+
     res.status(201).json({ success: true, message: 'KYC submitted — we will review within 24 hours', data: { submitted_at: record.submitted_at } });
   } catch (err) { next(err); }
 });
@@ -219,10 +234,18 @@ router.get('/rates', async (req: Request, res: Response, next: NextFunction) => 
     if (!from || !to) {
       res.status(400).json({ success: false, message: '?from=USD&to=NGN query params required' }); return;
     }
-    const rateRes = await gtp.get(`/rates/${from}/${to}`);
-    const entry   = rateRes.data.data as { buy_rate: string; updated_at: string; timestamp: string };
-    const rawRate = parseFloat(entry.buy_rate);
-    const quote   = buildQuote(from, to, rawRate, entry.timestamp, entry.updated_at, 'live_market');
+    let entry: { buy_rate: string; updated_at: string; timestamp: string };
+    try {
+      const rateRes = await gtp.get(`/rates/${from}/${to}`);
+      entry = rateRes.data.data as typeof entry;
+    } catch {
+      res.status(422).json({ success: false, message: `Rate not available for ${from}/${to}. This pair may not be supported by Expedier.` }); return;
+    }
+    const rawRate = parseFloat(entry.buy_rate ?? '0');
+    if (!rawRate || isNaN(rawRate)) {
+      res.status(422).json({ success: false, message: `Rate data missing for ${from}/${to}` }); return;
+    }
+    const quote = buildQuote(from, to, rawRate, entry.timestamp, entry.updated_at, 'live_market');
     res.json({
       success: true,
       data: {
@@ -273,6 +296,13 @@ router.post('/send', async (req: Request, res: Response, next: NextFunction) => 
     const { recipient_email, currency, amount, note } = parsed.data;
     const senderId = req.user!.user_id;
 
+    // Circuit breaker — block if this currency's outflows are frozen
+    try { await assertNotFrozen(currency); } catch (e) {
+      if (e instanceof FrozenCurrencyError)
+        return void res.status(503).json({ success: false, message: `${currency} transfers are temporarily suspended for maintenance. Please try again later.`, code: 'CURRENCY_FROZEN' });
+      throw e;
+    }
+
     const recipient = await getUserByEmail(recipient_email);
     if (!recipient) {
       res.status(404).json({ success: false, message: 'Recipient not found' }); return;
@@ -298,6 +328,12 @@ router.post('/send', async (req: Request, res: Response, next: NextFunction) => 
     await creditBalance(recipient.user_id, currency, amount, reference, desc).catch(() => {/* reconcile */});
 
     auditLog('p2p.send', req, { sender: senderId, recipient: recipient.user_id, currency, amount, reference });
+
+    // Email notifications (fire-and-forget)
+    const senderUser = await getUserById(senderId).catch(() => null);
+    const senderName = senderUser ? `${senderUser.first_name} ${senderUser.last_name}` : req.user!.email;
+    sendMoneySent(req.user!.email, senderUser?.first_name ?? '', recipient.email, currency, amount, reference);
+    sendMoneyReceived(recipient.email, recipient.first_name, senderName, currency, amount);
 
     res.status(201).json({
       success: true,
@@ -341,6 +377,13 @@ router.post('/transfer', requireKyc, async (req: Request, res: Response, next: N
     const { amount, currency, client_reference } = parsed.data;
     const userId = req.user!.user_id;
 
+    // Circuit breaker — block outflows for frozen currencies
+    try { await assertNotFrozen(currency); } catch (e) {
+      if (e instanceof FrozenCurrencyError)
+        return void res.status(503).json({ success: false, message: `${currency} transfers are temporarily suspended for maintenance. Please try again later.`, code: 'CURRENCY_FROZEN' });
+      throw e;
+    }
+
     // Debit ledger first
     try {
       await debitBalance(userId, currency, amount, 'transfer', client_reference, parsed.data.description ?? `Transfer ${amount} ${currency}`);
@@ -362,6 +405,12 @@ router.post('/transfer', requireKyc, async (req: Request, res: Response, next: N
     }
 
     auditLog('user.transfer', req, { user_id: userId, amount, currency, client_reference });
+
+    // Email notification (fire-and-forget)
+    getUserById(userId).then(u => {
+      if (u) sendTransferInitiated(u.email, u.first_name, currency, amount, client_reference);
+    }).catch(() => {});
+
     res.status(201).json(gtpData);
   } catch (err) { next(err); }
 });
@@ -389,9 +438,22 @@ router.post('/swap', requireKyc, async (req: Request, res: Response, next: NextF
       res.status(400).json({ success: false, message: 'from_currency and to_currency must differ' }); return;
     }
 
+    // Circuit breaker — block if the source currency outflows are frozen
+    try { await assertNotFrozen(body.from_currency); } catch (e) {
+      if (e instanceof FrozenCurrencyError)
+        return void res.status(503).json({ success: false, message: `${body.from_currency} exchanges are temporarily suspended. Please try again later.`, code: 'CURRENCY_FROZEN' });
+      throw e;
+    }
+
     // 1. Fetch live rate from GTP (pricing only — no GTP wallet call)
-    const rateRes = await gtp.get(`/rates/${body.from_currency}/${body.to_currency}`);
-    const entry   = rateRes.data.data as { buy_rate?: string; updated_at?: string; timestamp?: string } | undefined;
+    //    GTP may return 404 or 400 for unsupported pairs — map those to 422 instead of 500.
+    let entry: { buy_rate?: string; updated_at?: string; timestamp?: string } | undefined;
+    try {
+      const rateRes = await gtp.get(`/rates/${body.from_currency}/${body.to_currency}`);
+      entry = rateRes.data.data as typeof entry;
+    } catch {
+      res.status(422).json({ success: false, message: `Exchange rate not available for ${body.from_currency} → ${body.to_currency}. This pair may not be supported yet.` }); return;
+    }
     const rawRate = parseFloat(entry?.buy_rate ?? '0');
     if (!rawRate || isNaN(rawRate)) {
       res.status(422).json({ success: false, message: `Exchange rate not available for ${body.from_currency} → ${body.to_currency}` }); return;
@@ -421,6 +483,16 @@ router.post('/swap', requireKyc, async (req: Request, res: Response, next: NextF
     }
 
     auditLog('user.swap', req, { user_id: userId, from_currency: body.from_currency, to_currency: body.to_currency, from_amount: conv.fromAmount, to_amount: conv.toAmount, rate: conv.customerRate });
+
+    // Email notification (fire-and-forget)
+    getUserById(userId).then(u => {
+      if (u) sendSwapCompleted(
+        u.email, u.first_name,
+        body.from_currency, conv.fromAmount.toFixed(2),
+        body.to_currency,   conv.toAmount.toFixed(2),
+        conv.customerRate.toFixed(4),
+      );
+    }).catch(() => {});
 
     res.status(201).json({
       success: true,

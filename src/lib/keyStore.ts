@@ -75,6 +75,19 @@ export async function listApiKeys(): Promise<Omit<ApiKeyRecord, 'key_hash'>[]> {
   return (result.Items ?? []).map(({ key_hash: _omit, ...rest }) => rest) as Omit<ApiKeyRecord, 'key_hash'>[];
 }
 
+// ── Get a key by key_id (admin) ───────────────────────────────────────────────
+export async function getApiKeyById(keyId: string): Promise<Omit<ApiKeyRecord, 'key_hash'> | null> {
+  const result = await db.send(new ScanCommand({
+    TableName: TABLE,
+    FilterExpression: 'key_id = :id',
+    ExpressionAttributeValues: { ':id': keyId },
+    Limit: 1,
+  }));
+  if (!result.Items || result.Items.length === 0) return null;
+  const { key_hash: _omit, ...rest } = result.Items[0] as ApiKeyRecord;
+  return rest;
+}
+
 // ── Revoke a key (admin) ──────────────────────────────────────────────────────
 export async function revokeApiKey(keyId: string): Promise<boolean> {
   // Scan to find the key by key_id (not key_hash — admin doesn't know the hash)

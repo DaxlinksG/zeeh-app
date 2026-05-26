@@ -1,10 +1,16 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { z } from 'zod';
-import { createApiKey, listApiKeys, revokeApiKey } from '../lib/keyStore';
+import { createApiKey, listApiKeys, revokeApiKey, getApiKeyById } from '../lib/keyStore';
 import { creditBalance, getAllBalances, getTransactions } from '../lib/ledger';
-import { listPendingDeposits, assignDeposit, ignoreDeposit } from '../lib/deposits';
-import { listUsers, listPendingKyc, getKyc, updateKycStatus } from '../lib/userStore';
+import { listPendingDeposits, assignDeposit, ignoreDeposit, getDeposit } from '../lib/deposits';
+import { listUsers, listPendingKyc, getKyc, updateKycStatus, getUserById } from '../lib/userStore';
 import { listDepositInstructions, getDepositInstruction, putDepositInstruction, deleteDepositInstruction } from '../lib/depositConfig';
+import { freezeCurrency, unfreezeCurrency, listFrozen, isFrozen } from '../lib/circuitBreaker';
+import {
+  sendApiKeyCreated, sendApiKeyRevoked,
+  sendKycApproved, sendKycRejected,
+  sendDepositCredited,
+} from '../lib/mailer';
 
 const router = Router();
 
@@ -38,6 +44,9 @@ router.post('/keys', async (req: Request, res: Response, next: NextFunction) => 
 
     const { record, rawKey } = await createApiKey(parsed.data.client_name, parsed.data.client_email);
 
+    // Email API key to client (fire-and-forget — includes the raw key shown once)
+    sendApiKeyCreated(record.client_email, record.client_name, record.key_id, rawKey);
+
     res.status(201).json({
       success: true,
       message: 'API key created. Save the api_key now — it will never be shown again.',
@@ -67,11 +76,17 @@ router.get('/keys', async (_req: Request, res: Response, next: NextFunction) => 
 // DELETE /admin/keys/:key_id — revoke a key
 router.delete('/keys/:key_id', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const revoked = await revokeApiKey(req.params.key_id);
+    // Look up before revoking so we have email for notification
+    const keyRecord = await getApiKeyById(req.params.key_id);
+    const revoked   = await revokeApiKey(req.params.key_id);
     if (!revoked) {
       res.status(404).json({ success: false, message: 'Key not found' });
       return;
     }
+
+    // Email client (fire-and-forget)
+    if (keyRecord) sendApiKeyRevoked(keyRecord.client_email, keyRecord.client_name, req.params.key_id);
+
     res.json({ success: true, message: `Key ${req.params.key_id} revoked` });
   } catch (err) {
     next(err);
@@ -169,6 +184,12 @@ router.post('/users/:user_id/kyc/approve', async (req: Request, res: Response, n
     const parsed = kycActionSchema.safeParse(req.body);
     const notes  = parsed.success ? parsed.data.notes : undefined;
     await updateKycStatus(req.params.user_id, 'approved', notes);
+
+    // Email user (fire-and-forget)
+    getUserById(req.params.user_id).then(u => {
+      if (u) sendKycApproved(u.email, u.first_name);
+    }).catch(() => {});
+
     res.json({ success: true, message: `KYC approved for ${req.params.user_id}` });
   } catch (err) { next(err); }
 });
@@ -179,6 +200,12 @@ router.post('/users/:user_id/kyc/reject', async (req: Request, res: Response, ne
     const parsed = kycActionSchema.safeParse(req.body);
     const notes  = parsed.success ? parsed.data.notes : 'Rejected by admin';
     await updateKycStatus(req.params.user_id, 'rejected', notes);
+
+    // Email user (fire-and-forget)
+    getUserById(req.params.user_id).then(u => {
+      if (u) sendKycRejected(u.email, u.first_name, notes ?? 'Please resubmit with valid documents');
+    }).catch(() => {});
+
     res.json({ success: true, message: `KYC rejected for ${req.params.user_id}` });
   } catch (err) { next(err); }
 });
@@ -222,6 +249,18 @@ router.post('/deposits/:deposit_id/assign', async (req: Request, res: Response, 
       return;
     }
     const deposit = await assignDeposit(req.params.deposit_id, parsed.data.key_id, 'admin');
+
+    // Email the client (fire-and-forget)
+    getApiKeyById(parsed.data.key_id).then(async keyRec => {
+      if (!keyRec) return;
+      // Fetch new balance for the email
+      const { getAllBalances } = await import('../lib/ledger');
+      const balances  = await getAllBalances(parsed.data.key_id).catch(() => []);
+      const balEntry  = balances.find(b => b.currency === deposit.currency);
+      const newBalance = balEntry ? balEntry.balance : deposit.amount;
+      sendDepositCredited(keyRec.client_email, keyRec.client_name, deposit.currency, deposit.amount, newBalance);
+    }).catch(() => {});
+
     res.json({
       success: true,
       message: `Deposit ${deposit.deposit_id} assigned and ${deposit.currency} ${deposit.amount} credited to ${deposit.assigned_to}`,
@@ -302,6 +341,67 @@ router.delete('/deposit-instructions/:currency', async (req: Request, res: Respo
   try {
     await deleteDepositInstruction(req.params.currency);
     res.json({ success: true, message: `Deposit instructions removed for ${req.params.currency.toUpperCase()}` });
+  } catch (err) { next(err); }
+});
+
+// ── Circuit Breakers ─────────────────────────────────────────────────────────
+// Auto-set by treasury reconciliation; manually overrideable by admin.
+// Frozen currencies block outflows (swap, transfer, send) but allow inflows.
+
+// GET /admin/circuit-breakers — list all active freezes
+router.get('/circuit-breakers', async (_req: Request, res: Response, next: NextFunction) => {
+  try {
+    const frozen = await listFrozen();
+    res.json({
+      success: true,
+      data: {
+        frozen,
+        count: frozen.length,
+        note: 'Frozen currencies block swap/transfer/send outflows. Deposits still accepted.',
+      },
+    });
+  } catch (err) { next(err); }
+});
+
+// GET /admin/circuit-breakers/:currency — check one currency
+router.get('/circuit-breakers/:currency', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const currency = req.params.currency.toUpperCase();
+    const frozen   = await isFrozen(currency);
+    res.json({ success: true, data: { currency, frozen } });
+  } catch (err) { next(err); }
+});
+
+const freezeSchema = z.object({
+  reason: z.string().min(5).max(300),
+});
+
+// POST /admin/circuit-breakers/:currency/freeze — manually trip a breaker
+router.post('/circuit-breakers/:currency/freeze', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const currency = req.params.currency.toUpperCase();
+    if (!/^[A-Z]{3}$/.test(currency)) {
+      res.status(400).json({ success: false, message: 'currency must be a 3-letter code' }); return;
+    }
+    const parsed = freezeSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ success: false, errors: parsed.error.flatten() }); return;
+    }
+    const record = await freezeCurrency(currency, parsed.data.reason, 'admin_manual');
+    res.json({
+      success: true,
+      message: `${currency} outflows are now frozen`,
+      data: record,
+    });
+  } catch (err) { next(err); }
+});
+
+// DELETE /admin/circuit-breakers/:currency — manually lift a breaker
+router.delete('/circuit-breakers/:currency', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const currency = req.params.currency.toUpperCase();
+    await unfreezeCurrency(currency);
+    res.json({ success: true, message: `${currency} outflows restored` });
   } catch (err) { next(err); }
 });
 

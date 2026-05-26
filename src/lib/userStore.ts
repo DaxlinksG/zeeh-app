@@ -27,17 +27,22 @@ const KYC_TABLE   = process.env.KYC_TABLE   ?? 'zeeh-kyc';
 export type KycStatus = 'none' | 'pending' | 'approved' | 'rejected';
 
 export interface User {
-  user_id:      string;
-  email:        string;
-  password_hash: string;
-  first_name:   string;
-  last_name:    string;
-  phone:        string;
-  country:      string;
-  kyc_status:   KycStatus;
-  is_active:    boolean;
-  created_at:   string;
+  user_id:        string;
+  email:          string;
+  password_hash:  string;
+  first_name:     string;
+  last_name:      string;
+  phone:          string;
+  country:        string;
+  kyc_status:     KycStatus;
+  is_active:      boolean;
+  created_at:     string;
   last_login_at?: string;
+  email_verified: boolean;
+  // OTP (stored hashed, expires via otp_expires Unix timestamp with DynamoDB TTL)
+  otp_hash?:      string;
+  otp_expires?:   number;
+  otp_attempts?:  number;
 }
 
 export interface KycRecord {
@@ -72,16 +77,17 @@ export async function createUser(
   if (existing) throw new Error('EMAIL_EXISTS');
 
   const user: User = {
-    user_id:       `usr_${crypto.randomBytes(12).toString('hex')}`,
-    email:         email.toLowerCase().trim(),
-    password_hash: await bcrypt.hash(password, 12),
-    first_name:    firstName.trim(),
-    last_name:     lastName.trim(),
-    phone:         phone.trim(),
-    country:       country.trim(),
-    kyc_status:    'none',
-    is_active:     true,
-    created_at:    new Date().toISOString(),
+    user_id:        `usr_${crypto.randomBytes(12).toString('hex')}`,
+    email:          email.toLowerCase().trim(),
+    password_hash:  await bcrypt.hash(password, 12),
+    first_name:     firstName.trim(),
+    last_name:      lastName.trim(),
+    phone:          phone.trim(),
+    country:        country.trim(),
+    kyc_status:     'none',
+    is_active:      true,
+    email_verified: false,
+    created_at:     new Date().toISOString(),
   };
 
   await db.send(new PutCommand({ TableName: USERS_TABLE, Item: user }));
@@ -210,6 +216,66 @@ export async function listUsers(limit = 100): Promise<Omit<User, 'password_hash'
   }));
   const items = (result.Items ?? []) as Omit<User, 'password_hash'>[];
   return items.sort((a, b) => b.created_at.localeCompare(a.created_at));
+}
+
+// ── OTP: generate, store (hashed), verify ─────────────────────────────────
+const OTP_TTL_SECONDS = 10 * 60; // 10 minutes
+const OTP_MAX_ATTEMPTS = 5;
+
+export function generateOtp(): string {
+  return String(crypto.randomInt(100000, 999999));
+}
+
+function hashOtp(otp: string): string {
+  return crypto.createHash('sha256').update(otp).digest('hex');
+}
+
+export async function storeOtp(userId: string, otp: string): Promise<void> {
+  const expiresAt = Math.floor(Date.now() / 1000) + OTP_TTL_SECONDS;
+  await db.send(new UpdateCommand({
+    TableName: USERS_TABLE,
+    Key: { user_id: userId },
+    UpdateExpression: 'SET otp_hash = :h, otp_expires = :e, otp_attempts = :a',
+    ExpressionAttributeValues: {
+      ':h': hashOtp(otp),
+      ':e': expiresAt,
+      ':a': 0,
+    },
+  }));
+}
+
+export async function verifyOtp(userId: string, otp: string): Promise<'ok' | 'expired' | 'invalid' | 'locked'> {
+  const user = await getUserById(userId);
+  if (!user?.otp_hash) return 'expired';
+
+  if ((user.otp_attempts ?? 0) >= OTP_MAX_ATTEMPTS) return 'locked';
+  if (!user.otp_expires || Math.floor(Date.now() / 1000) > user.otp_expires) return 'expired';
+
+  const match = crypto.timingSafeEqual(
+    Buffer.from(user.otp_hash, 'hex'),
+    Buffer.from(hashOtp(otp), 'hex'),
+  );
+
+  if (!match) {
+    // Increment attempt counter
+    await db.send(new UpdateCommand({
+      TableName: USERS_TABLE,
+      Key: { user_id: userId },
+      UpdateExpression: 'SET otp_attempts = otp_attempts + :one',
+      ExpressionAttributeValues: { ':one': 1 },
+    })).catch(() => {});
+    return 'invalid';
+  }
+
+  // Valid — mark email verified, clear OTP fields
+  await db.send(new UpdateCommand({
+    TableName: USERS_TABLE,
+    Key: { user_id: userId },
+    UpdateExpression: 'SET email_verified = :t REMOVE otp_hash, otp_expires, otp_attempts',
+    ExpressionAttributeValues: { ':t': true },
+  }));
+
+  return 'ok';
 }
 
 // ── List pending KYC submissions (admin) ───────────────────────────────────

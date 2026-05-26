@@ -25,6 +25,8 @@ import {
 } from '@aws-sdk/lib-dynamodb';
 import crypto from 'crypto';
 import { gtp } from './gtpClient';
+import { sendTreasuryAlert } from './mailer';
+import { freezeCurrency, unfreezeCurrency, listFrozen } from './circuitBreaker';
 
 const dynamo = new DynamoDBClient({ region: process.env.AWS_REGION ?? 'ca-central-1' });
 const db     = DynamoDBDocumentClient.from(dynamo);
@@ -344,13 +346,67 @@ export async function runReconciliation(triggeredBy: 'scheduled' | 'manual' = 's
 
   await saveSnapshot(snapshot);
 
+  // ── Circuit breaker management ───────────────────────────────────────────
+  // Trip breakers for currencies with a critical shortfall;
+  // auto-lift breakers for currencies that are back to OK.
+  const criticalCurrencies = new Set(
+    fraudFlags
+      .filter(f => f.type === 'TREASURY_SHORTFALL' && f.severity === 'critical' && f.currency)
+      .map(f => f.currency!),
+  );
+
+  const okCurrencies = positions
+    .filter(p => p.status === 'ok')
+    .map(p => p.currency);
+
+  // Trip
+  await Promise.allSettled(
+    [...criticalCurrencies].map(currency => {
+      const flag = fraudFlags.find(f => f.currency === currency && f.type === 'TREASURY_SHORTFALL');
+      return freezeCurrency(
+        currency,
+        `Treasury shortfall: owes ${flag?.amount ?? '?'} more than Expedier holds`,
+        'treasury_auto',
+        snapshotId,
+        flag?.amount,
+      );
+    }),
+  );
+
+  // Lift — only clear auto-set breakers; leave admin-manual ones alone
+  if (okCurrencies.length > 0) {
+    const currentFreezes = await listFrozen().catch(() => []);
+    const autoFreezes = currentFreezes.filter(f => f.frozen_by === 'treasury_auto');
+    await Promise.allSettled(
+      autoFreezes
+        .filter(f => okCurrencies.includes(f.currency))
+        .map(f => unfreezeCurrency(f.currency)),
+    );
+  }
+
+  // ── Logging & alerts ─────────────────────────────────────────────────────
   if (overallStatus !== 'ok') {
     console.error(`\n${'█'.repeat(60)}`);
     console.error(`⚠️  TREASURY ALERT  [${snapshot.timestamp}]  status=${overallStatus.toUpperCase()}`);
     for (const f of fraudFlags) {
       console.error(`   [${f.severity.toUpperCase()}] ${f.type}: ${f.detail}`);
     }
+    if (criticalCurrencies.size > 0) {
+      console.error(`🔴 CIRCUIT BREAKERS TRIPPED: ${[...criticalCurrencies].join(', ')}`);
+    }
     console.error(`${'█'.repeat(60)}\n`);
+
+    // Email + Slack alert (fire-and-forget)
+    sendTreasuryAlert(
+      overallStatus,
+      fraudFlags.map(f => ({
+        type:     f.type,
+        severity: f.severity,
+        detail:   f.detail,
+        currency: f.currency,
+        amount:   f.amount,
+      })),
+    ).catch(() => {});
   } else {
     console.log(`✅  Treasury OK  [${snapshot.timestamp}]  accounts=${ledgerData.total}  duration=${snapshot.duration_ms}ms`);
   }

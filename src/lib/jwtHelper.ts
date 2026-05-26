@@ -19,9 +19,10 @@ const ACCESS_SECRET  = process.env.JWT_ACCESS_SECRET  ?? 'zeeh-access-secret-cha
 const REFRESH_SECRET = process.env.JWT_REFRESH_SECRET ?? 'zeeh-refresh-secret-change-in-prod';
 
 export interface AccessPayload {
-  sub:        string;   // user_id
-  email:      string;
-  kyc_status: string;
+  sub:            string;   // user_id
+  email:          string;
+  kyc_status:     string;
+  email_verified?: boolean;
 }
 
 export interface RefreshPayload {
