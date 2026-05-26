@@ -2,6 +2,7 @@ import { Router, Request, Response, NextFunction } from 'express';
 import { z } from 'zod';
 import { gtp } from '../lib/gtpClient';
 import { auditLog } from '../middleware/logger';
+import { debitBalance, refundBalance, InsufficientBalanceError } from '../lib/ledger';
 
 const router = Router();
 
@@ -39,14 +40,47 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
       res.status(400).json({ success: false, message: 'Validation error', errors: parsed.error.flatten() });
       return;
     }
-    const { data } = await gtp.post('/transfers', parsed.data);
+
+    const clientId = req.apiClient!.key_id;
+    const { amount, currency, client_reference } = parsed.data;
+
+    // ── 1. Debit ledger atomically before touching GTP ─────────────────────
+    try {
+      await debitBalance(
+        clientId, currency, amount, 'transfer',
+        client_reference,
+        parsed.data.description ?? `Transfer ${amount} ${currency}`,
+        { currency, amount },
+      );
+    } catch (err) {
+      if (err instanceof InsufficientBalanceError) {
+        res.status(402).json({
+          success: false,
+          message: err.message,
+          data: { required: err.required, available: err.available, currency: err.currency },
+        });
+        return;
+      }
+      throw err;
+    }
+
+    // ── 2. Execute with GTP — refund immediately if it fails ───────────────
+    let gtpData;
+    try {
+      const { data } = await gtp.post('/transfers', parsed.data);
+      gtpData = data;
+    } catch (gtpErr) {
+      await refundBalance(clientId, currency, amount, client_reference, 'GTP transfer failed').catch(() => {});
+      throw gtpErr;
+    }
+
     auditLog('transfer.initiated', req, {
-      amount: parsed.data.amount,
-      currency: parsed.data.currency,
-      client_reference: parsed.data.client_reference,
-      transfer_id: (data.data?.transfer as Record<string,unknown>)?.transfer_id,
+      client_id: clientId, client_name: req.apiClient!.client_name,
+      amount, currency, client_reference,
+      transfer_id: (gtpData.data?.transfer as Record<string, unknown>)?.transfer_id,
     });
-    res.status(201).json(data);
+
+    res.status(201).json(gtpData);
   } catch (err) {
     next(err);
   }

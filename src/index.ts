@@ -14,6 +14,7 @@ import walletsRouter from './routes/wallets';
 import accountRouter from './routes/account';
 import webhooksRouter from './routes/webhooks';
 import adminRouter from './routes/admin';
+import balanceRouter from './routes/balance';
 
 const app = express();
 
@@ -183,6 +184,7 @@ app.use('/api/rates', quoteLimiter, ratesRouter);     // 300 req/min for quotes
 app.use('/api/swaps', transferLimiter, swapsRouter);  // 20 req/min for swaps
 app.use('/api/transfers', transferLimiter, transfersRouter); // 20 req/min for transfers
 app.use('/api/wallets', walletsRouter);
+app.use('/api/balance', balanceRouter);
 app.use('/api/account', accountRouter);
 app.use('/api/webhooks', webhooksRouter);
 

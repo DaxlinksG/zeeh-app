@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { gtp } from '../lib/gtpClient';
 import { buildQuote, calcConversion } from '../lib/spreadEngine';
 import { auditLog } from '../middleware/logger';
+import { debitBalance, creditBalance, refundBalance, InsufficientBalanceError } from '../lib/ledger';
 
 const router = Router();
 
@@ -42,9 +43,29 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
     const quote = buildQuote(body.from_currency, body.to_currency, rawRate, entry.timestamp, entry.updated_at, 'live_market');
     const conversion = calcConversion(fromAmount, quote);
 
-    // 2. Execute the swap with GTP at the full raw amount (we swap the real amount, customer receives less)
-    // The from_amount is what we debit; GTP swaps at their rate giving us raw_to_amount.
-    // We credit the customer customer_to_amount and retain spread_revenue internally.
+    const clientId  = req.apiClient!.key_id;
+    const reference = body.reference ?? `SWAP-${Date.now()}`;
+
+    // 2. Debit client's from_currency ledger atomically
+    try {
+      await debitBalance(
+        clientId, body.from_currency, body.amount, 'swap_debit',
+        reference, `Swap ${body.amount} ${body.from_currency} → ${body.to_currency}`,
+        { from_currency: body.from_currency, to_currency: body.to_currency },
+      );
+    } catch (err) {
+      if (err instanceof InsufficientBalanceError) {
+        res.status(402).json({
+          success: false,
+          message: err.message,
+          data: { required: err.required, available: err.available, currency: err.currency },
+        });
+        return;
+      }
+      throw err;
+    }
+
+    // 3. Execute the swap with GTP — refund if it fails
     const swapRes = await gtp.post('/swap', {
       from_wallet_id: body.from_wallet_id,
       to_wallet_id: body.to_wallet_id,
@@ -55,6 +76,15 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
       reference: body.reference,
       metadata: body.metadata,
     });
+
+    // 4. Credit client's to_currency ledger with what they receive
+    await creditBalance(
+      clientId, body.to_currency,
+      conversion.toAmount.toFixed(2),
+      reference,
+      `Swap credit ${body.from_currency} → ${body.to_currency}`,
+      { from_currency: body.from_currency, to_currency: body.to_currency },
+    ).catch(() => {/* non-fatal — reconcile via webhook */});
 
     auditLog('swap.executed', req, {
       from_currency: body.from_currency,
