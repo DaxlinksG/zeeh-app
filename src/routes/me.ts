@@ -28,6 +28,7 @@ import {
 } from '../lib/ledger';
 import { gtp } from '../lib/gtpClient';
 import { buildQuote, calcConversion } from '../lib/spreadEngine';
+import { listDepositInstructions } from '../lib/depositConfig';
 import { requireKyc } from '../middleware/userAuth';
 import { auditLog } from '../middleware/logger';
 
@@ -137,26 +138,56 @@ router.get('/transactions', async (req: Request, res: Response, next: NextFuncti
 });
 
 // ── Deposit instructions ───────────────────────────────────────────────────
+// Merges admin-configured instructions (per currency) with GTP wallet data.
+// Admin-configured entries take full priority; GTP wallets fill in any gap.
 router.get('/deposit', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { data } = await gtp.get('/wallets');
-    // GTP may wrap wallets under data.data (array or {wallets:[...]})
-    let rawWallets: Record<string, unknown>[] = [];
-    const d = data.data;
-    if (Array.isArray(d))              rawWallets = d;
-    else if (Array.isArray(d?.wallets)) rawWallets = d.wallets;
-    else if (Array.isArray(data))       rawWallets = data;
+    // 1. Admin-configured instructions (from DynamoDB)
+    const configured = await listDepositInstructions();
+    const configMap  = new Map(configured.map(c => [c.currency.toUpperCase(), c]));
 
-    const instructions = rawWallets.map((w: Record<string, unknown>) => {
-      // currency is a nested object: { code: 'CAD', name: 'Canadian Dollar', ... }
-      const cur  = w.currency as Record<string, unknown> | string | undefined;
-      const code = (typeof cur === 'object' && cur !== null)
-        ? String((cur as Record<string, unknown>).code ?? '').toUpperCase()
-        : String(cur ?? '').toUpperCase();
+    // 2. GTP wallets (best-effort — don't fail if GTP is down)
+    let gtpMap = new Map<string, Record<string, unknown>>();
+    try {
+      const { data } = await gtp.get('/wallets');
+      const d = data.data;
+      let rawWallets: Record<string, unknown>[] = [];
+      if (Array.isArray(d))               rawWallets = d;
+      else if (Array.isArray(d?.wallets)) rawWallets = d.wallets;
+      else if (Array.isArray(data))        rawWallets = data;
 
-      // bank details may be in user_bank_details or directly on the wallet
-      const details = (w.user_bank_details as Record<string, unknown> | undefined) ?? w;
+      for (const w of rawWallets) {
+        const cur  = w.currency as Record<string, unknown> | string | undefined;
+        const code = (typeof cur === 'object' && cur !== null)
+          ? String((cur as Record<string, unknown>).code ?? '').toUpperCase()
+          : String(cur ?? '').toUpperCase();
+        if (code && code !== '[OBJECT OBJECT]') gtpMap.set(code, w);
+      }
+    } catch { /* GTP unavailable — still serve admin-configured instructions */ }
 
+    // 3. Merge: start with admin instructions, add any GTP-only currencies
+    const allCurrencies = new Set([...configMap.keys(), ...gtpMap.keys()]);
+    const instructions = Array.from(allCurrencies).map(code => {
+      const admin = configMap.get(code);
+      const w     = gtpMap.get(code);
+
+      if (admin) {
+        // Admin config is the source of truth; optionally pull wallet_id from GTP
+        return {
+          currency:       admin.currency,
+          bank_name:      admin.bank_name,
+          account_name:   admin.account_name,
+          account_number: admin.account_number,
+          iban:           admin.iban,
+          swift:          admin.swift,
+          sort_code:      admin.sort_code,
+          send_to_email:  admin.send_to_email,
+          wallet_id:      admin.wallet_id ?? (w ? String(w.wallet_id ?? w.id ?? '') : ''),
+        };
+      }
+
+      // GTP-only wallet (no admin config)
+      const details = (w!.user_bank_details as Record<string, unknown> | undefined) ?? w!;
       return {
         currency:       code,
         bank_name:      details.bank_name,
@@ -166,9 +197,9 @@ router.get('/deposit', async (req: Request, res: Response, next: NextFunction) =
         swift:          details.swift,
         sort_code:      details.sort_code,
         send_to_email:  details.send_to_email ?? (code === 'CAD' ? details.account_number : undefined),
-        wallet_id:      String(w.wallet_id ?? w.id ?? ''),
+        wallet_id:      String(w!.wallet_id ?? w!.id ?? ''),
       };
-    }).filter(i => i.currency && i.currency !== '[OBJECT OBJECT]');
+    }).filter(i => i.currency);
 
     res.json({
       success: true,

@@ -4,6 +4,7 @@ import { createApiKey, listApiKeys, revokeApiKey } from '../lib/keyStore';
 import { creditBalance, getAllBalances, getTransactions } from '../lib/ledger';
 import { listPendingDeposits, assignDeposit, ignoreDeposit } from '../lib/deposits';
 import { listUsers, listPendingKyc, getKyc, updateKycStatus } from '../lib/userStore';
+import { listDepositInstructions, getDepositInstruction, putDepositInstruction, deleteDepositInstruction } from '../lib/depositConfig';
 
 const router = Router();
 
@@ -247,6 +248,61 @@ router.post('/deposits/:deposit_id/ignore', async (req: Request, res: Response, 
     }
     next(err);
   }
+});
+
+// ── Deposit Instructions (admin-configurable per-currency bank details) ──────
+
+const depositInstructionSchema = z.object({
+  bank_name:      z.string().max(120).optional(),
+  account_name:   z.string().max(120).optional(),
+  account_number: z.string().max(60).optional(),
+  iban:           z.string().max(40).optional(),
+  swift:          z.string().max(20).optional(),
+  sort_code:      z.string().max(20).optional(),
+  send_to_email:  z.string().email().optional(),
+  wallet_id:      z.string().max(80).optional(),
+  enabled:        z.boolean().optional().default(true),
+});
+
+// GET /admin/deposit-instructions
+router.get('/deposit-instructions', async (_req: Request, res: Response, next: NextFunction) => {
+  try {
+    const instructions = await listDepositInstructions();
+    res.json({ success: true, data: { instructions, count: instructions.length } });
+  } catch (err) { next(err); }
+});
+
+// GET /admin/deposit-instructions/:currency
+router.get('/deposit-instructions/:currency', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const item = await getDepositInstruction(req.params.currency);
+    if (!item) { res.status(404).json({ success: false, message: 'Not found' }); return; }
+    res.json({ success: true, data: item });
+  } catch (err) { next(err); }
+});
+
+// PUT /admin/deposit-instructions/:currency  — create or replace
+router.put('/deposit-instructions/:currency', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const currency = req.params.currency.toUpperCase();
+    if (!/^[A-Z]{3}$/.test(currency)) {
+      res.status(400).json({ success: false, message: 'currency must be a 3-letter code e.g. NGN' }); return;
+    }
+    const parsed = depositInstructionSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ success: false, errors: parsed.error.flatten() }); return;
+    }
+    const item = await putDepositInstruction({ ...parsed.data, currency });
+    res.json({ success: true, message: `Deposit instructions saved for ${currency}`, data: item });
+  } catch (err) { next(err); }
+});
+
+// DELETE /admin/deposit-instructions/:currency
+router.delete('/deposit-instructions/:currency', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    await deleteDepositInstruction(req.params.currency);
+    res.json({ success: true, message: `Deposit instructions removed for ${req.params.currency.toUpperCase()}` });
+  } catch (err) { next(err); }
 });
 
 export default router;
