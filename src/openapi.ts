@@ -5,7 +5,7 @@ export const openapiSpec = {
     version: '1.0.0',
     description: `
 ## Overview
-**Zeeh Africa** is a cross-border payment API enabling fast, affordable money movement between Canada, Nigeria, the US, UK, and Europe — built on the GTP/Expedier payment network.
+**Zeeh Africa** is a cross-border payment API enabling fast, affordable money movement between Canada, Nigeria, the US, UK, and Europe.
 
 ---
 
@@ -21,31 +21,13 @@ x-api-key: YOUR_API_KEY
 
 ---
 
-## How Rates Work
-
-Every exchange rate already includes our **spread** (markup). This is transparent — you can always see the exact spread applied.
-
-\`\`\`
-customer_rate = raw_rate × (1 − spread_pct / 100)
-
-Example — CAD → NGN:
-  Interbank rate:    1,300 NGN / CAD
-  Spread:            2.5%
-  Customer rate:     1,267.50 NGN / CAD
-  Your savings vs wire transfer: significantly better than banks
-\`\`\`
-
-Use \`GET /api/rates/convert\` to get a full breakdown before initiating any payment.
-
----
-
 ## Authentication
 
 All endpoints require your API key in the **\`x-api-key\`** header.
 
 **Public endpoints (no key needed):**
 - \`GET /health\`
-- \`POST /webhooks/receive\` ← GTP calls this; do not call it yourself
+- \`POST /webhooks/receive\`
 
 ---
 
@@ -110,25 +92,22 @@ Exceeding the limit returns **HTTP 429**. Wait 60 seconds and retry.
         type: 'object',
         properties: {
           from_currency: { type: 'string', example: 'CAD' },
-          to_currency: { type: 'string', example: 'NGN' },
-          customer_rate: { type: 'number', example: 1267.5, description: 'Rate shown to customer (spread applied)' },
-          inverse_customer_rate: { type: 'number', example: 0.000789 },
-          spread_pct: { type: 'number', example: 2.5, description: 'Spread percentage applied' },
-          updated_at: { type: 'string', format: 'date-time' },
-          timestamp: { type: 'string', format: 'date-time' },
+          to_currency:   { type: 'string', example: 'NGN' },
+          rate:          { type: 'number', example: 1267.5 },
+          inverse_rate:  { type: 'number', example: 0.000789 },
+          updated_at:    { type: 'string', format: 'date-time' },
+          timestamp:     { type: 'string', format: 'date-time' },
         },
       },
       ConversionResult: {
         type: 'object',
         properties: {
           from_currency: { type: 'string', example: 'CAD' },
-          to_currency: { type: 'string', example: 'NGN' },
-          from_amount: { type: 'number', example: 1000 },
-          to_amount: { type: 'number', example: 1267500, description: 'Amount customer receives' },
-          customer_rate: { type: 'number', example: 1267.5 },
-          spread_pct: { type: 'number', example: 2.5 },
-          spread_revenue: { type: 'number', example: 32500, description: 'Your margin in destination currency' },
-          updated_at: { type: 'string', format: 'date-time' },
+          to_currency:   { type: 'string', example: 'NGN' },
+          from_amount:   { type: 'number', example: 1000 },
+          to_amount:     { type: 'number', example: 1267500 },
+          rate:          { type: 'number', example: 1267.5 },
+          updated_at:    { type: 'string', format: 'date-time' },
         },
       },
       WalletBalance: {
@@ -207,34 +186,11 @@ Exceeding the limit returns **HTTP 429**. Wait 60 seconds and retry.
         },
       },
     },
-    '/api/rates/spreads': {
-      get: {
-        tags: ['Exchange Rates'],
-        summary: 'View spread configuration',
-        description: 'Returns the spread percentage configured for each currency corridor and the default fallback.',
-        responses: {
-          200: {
-            description: 'Spread config',
-            content: {
-              'application/json': {
-                example: {
-                  success: true,
-                  data: {
-                    corridors: { CAD_NGN: 2.5, CAD_USD: 1.0, USD_NGN: 3.0 },
-                    default_spread_pct: 2.0,
-                  },
-                },
-              },
-            },
-          },
-        },
-      },
-    },
     '/api/rates/convert': {
       get: {
         tags: ['Exchange Rates'],
         summary: 'Calculate a conversion',
-        description: 'Calculates how much the customer receives for a given amount, showing your spread revenue.',
+        description: 'Calculates how much the recipient receives for a given amount. Use this to preview before sending.',
         parameters: [
           { name: 'amount', in: 'query', required: true, schema: { type: 'number', example: 1000 } },
           { name: 'from_currency', in: 'query', required: true, schema: { type: 'string', example: 'CAD' } },
@@ -364,14 +320,10 @@ Exceeding the limit returns **HTTP 429**. Wait 60 seconds and retry.
       post: {
         tags: ['Swaps'],
         summary: 'Execute a currency swap',
-        description: `Converts funds between two of your wallets at the spread-adjusted rate.
+        description: `Converts funds between two of your wallets at the live market rate.
 
-The response includes a **settlement breakdown** showing exactly how much the customer receives and your margin:
-- \`settlement.to_amount\` — what the customer gets
-- \`settlement.spread_revenue\` — your revenue on this swap
-- \`settlement.customer_rate\` — the rate shown to the customer
-
-Use \`GET /api/rates/convert\` first to preview the conversion before executing.`,
+The response includes a settlement breakdown showing the exact amounts exchanged.
+Use \`GET /api/rates/convert\` first to preview before executing.`,
         requestBody: {
           required: true,
           content: {
@@ -396,7 +348,7 @@ Use \`GET /api/rates/convert\` first to preview the conversion before executing.
           401: { description: 'Invalid or missing API key', content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } } },
           429: { description: 'Rate limit exceeded (20 swaps/min)', content: { 'application/json': { schema: { $ref: '#/components/schemas/RateLimitError' } } } },
           201: {
-            description: 'Swap executed with settlement breakdown',
+            description: 'Swap executed',
             content: {
               'application/json': {
                 example: {
@@ -404,13 +356,11 @@ Use \`GET /api/rates/convert\` first to preview the conversion before executing.
                   data: {
                     swap: {},
                     settlement: {
-                      from_amount: 1000,
+                      from_amount:   1000,
                       from_currency: 'CAD',
-                      to_amount: 1267500,
-                      to_currency: 'NGN',
-                      customer_rate: 1267.5,
-                      spread_pct: 2.5,
-                      spread_revenue: 32500,
+                      to_amount:     1267500,
+                      to_currency:   'NGN',
+                      rate:          1267.5,
                     },
                   },
                 },

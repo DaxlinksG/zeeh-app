@@ -72,13 +72,11 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
       data: {
         swap: swapRes.data.data?.swap ?? swapRes.data.data,
         settlement: {
-          from_amount: conversion.fromAmount,
+          from_amount:   conversion.fromAmount,
           from_currency: body.from_currency,
-          to_amount: conversion.toAmount,
-          to_currency: body.to_currency,
-          customer_rate: conversion.customerRate,
-          spread_pct: conversion.spreadPct,
-          spread_revenue: conversion.spreadRevenue,
+          to_amount:     conversion.toAmount,
+          to_currency:   body.to_currency,
+          rate:          conversion.customerRate,
         },
       },
     });
