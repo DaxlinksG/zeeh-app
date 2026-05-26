@@ -79,7 +79,7 @@ Returns **HTTP 429** when exceeded. Retry after 60 seconds.
     { name: 'Rates',     description: 'Live exchange rates and conversion calculator' },
     { name: 'Transfers', description: 'Send money to a bank account' },
     { name: 'Swaps',     description: 'Convert between your wallets' },
-    { name: 'Wallets',   description: 'View balances and transaction history' },
+    { name: 'Wallets',   description: 'Balances, deposit instructions (on-ramp), and transaction history' },
     { name: 'Banks',     description: 'Bank lookup and account validation' },
     { name: 'Account',   description: 'Your account details and settings' },
     { name: 'Webhooks',  description: 'Receive payment event notifications' },
@@ -691,6 +691,112 @@ Use \`GET /api/wallets\` to find your wallet IDs, and \`GET /api/rates/convert\`
     },
 
     // ── WALLETS ───────────────────────────────────────────────────
+    '/api/wallets/deposit': {
+      get: {
+        tags: ['Wallets'],
+        summary: 'Get deposit instructions (on-ramp)',
+        description: `Returns the virtual bank account details for every currency. Send funds to these accounts to top up your wallet.
+
+Each currency has its own dedicated account — funds credited automatically upon receipt:
+
+| Currency | Method |
+|---|---|
+| 🇨🇦 CAD | Interac eTransfer |
+| 🇳🇬 NGN | Bank Transfer |
+| 🇬🇧 GBP | Faster Payments (FPS) |
+| 🇪🇺 EUR | SEPA Transfer |
+| 🇺🇸 USD | Wire / ACH |`,
+        responses: {
+          200: {
+            description: 'Deposit instructions for all currencies',
+            content: {
+              'application/json': {
+                example: {
+                  success: true,
+                  message: 'Send funds to any of these accounts to top up your wallet.',
+                  data: {
+                    deposit_accounts: [
+                      {
+                        currency: 'CAD', method: 'Interac eTransfer',
+                        bank_name: 'Interac', account_name: 'Zeeh Africa',
+                        send_to_email: 'payments@zeehfi.ca',
+                        ddt_number: 'DDT-002060',
+                        instructions: 'Send an Interac eTransfer to the email above. Funds settle within minutes.',
+                        verified: true,
+                      },
+                      {
+                        currency: 'NGN', method: 'Bank Transfer',
+                        bank_name: 'Naira Virtual Bank', account_name: 'Zeeh Africa',
+                        account_number: '9900002060',
+                        instructions: 'Transfer to the account number above via any Nigerian bank or mobile app.',
+                        verified: true,
+                      },
+                      {
+                        currency: 'GBP', method: 'Faster Payments (FPS)',
+                        bank_name: 'FPS Gateway', account_name: 'Zeeh Africa',
+                        account_number: '8800002060',
+                        instructions: 'Send a Faster Payments transfer to the account number above.',
+                        verified: true,
+                      },
+                      {
+                        currency: 'EUR', method: 'SEPA Transfer',
+                        bank_name: 'SEPA Gateway', account_name: 'Zeeh Africa',
+                        iban: 'DE89370400440532012060',
+                        instructions: 'Send a SEPA transfer to the IBAN above.',
+                        verified: true,
+                      },
+                      {
+                        currency: 'USD', method: 'Wire Transfer (ACH)',
+                        bank_name: 'Wire Gateway', account_name: 'Zeeh Africa',
+                        account_number: '440000002060',
+                        instructions: 'Send a domestic wire or ACH transfer to the account number above.',
+                        verified: true,
+                      },
+                    ],
+                  },
+                },
+              },
+            },
+          },
+          401: { $ref: '#/components/responses/Unauthorized' },
+        },
+      },
+    },
+
+    '/api/wallets/deposit/{currency}': {
+      get: {
+        tags: ['Wallets'],
+        summary: 'Get deposit instructions for one currency',
+        parameters: [
+          { name: 'currency', in: 'path', required: true, schema: { type: 'string', example: 'CAD' }, description: '3-letter currency code' },
+        ],
+        responses: {
+          200: {
+            description: 'Deposit instructions for the requested currency',
+            content: {
+              'application/json': {
+                example: {
+                  success: true,
+                  data: {
+                    deposit_account: {
+                      currency: 'CAD', method: 'Interac eTransfer',
+                      bank_name: 'Interac', account_name: 'Zeeh Africa',
+                      send_to_email: 'payments@zeehfi.ca',
+                      ddt_number: 'DDT-002060',
+                      instructions: 'Send an Interac eTransfer to the email above. Funds settle within minutes.',
+                      verified: true,
+                    },
+                  },
+                },
+              },
+            },
+          },
+          401: { $ref: '#/components/responses/Unauthorized' },
+          404: { description: 'No wallet found for this currency' },
+        },
+      },
+    },
+
     '/api/wallets': {
       get: {
         tags: ['Wallets'],
