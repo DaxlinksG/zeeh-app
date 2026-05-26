@@ -13,6 +13,7 @@ import transfersRouter from './routes/transfers';
 import walletsRouter from './routes/wallets';
 import accountRouter from './routes/account';
 import webhooksRouter from './routes/webhooks';
+import adminRouter from './routes/admin';
 
 const app = express();
 
@@ -60,6 +61,9 @@ app.post('/webhooks/receive', (req, res) => {
   console.log(`${'─'.repeat(60)}\n`);
   res.status(200).json({ received: true });
 });
+
+// ── Admin routes (x-admin-key, no client API key needed) ──────────────────
+app.use('/admin', adminRouter);
 
 // ── Protected routes ───────────────────────────────────────────────────────
 app.use(requireApiKey);
