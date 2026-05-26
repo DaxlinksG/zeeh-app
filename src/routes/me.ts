@@ -139,15 +139,36 @@ router.get('/transactions', async (req: Request, res: Response, next: NextFuncti
 // ── Deposit instructions ───────────────────────────────────────────────────
 router.get('/deposit', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    // Re-use the wallets GTP endpoint to get virtual account details
     const { data } = await gtp.get('/wallets');
-    const wallets = (data.data?.wallets ?? data.data ?? []) as Record<string, unknown>[];
+    // GTP may wrap wallets under data.data (array or {wallets:[...]})
+    let rawWallets: Record<string, unknown>[] = [];
+    const d = data.data;
+    if (Array.isArray(d))              rawWallets = d;
+    else if (Array.isArray(d?.wallets)) rawWallets = d.wallets;
+    else if (Array.isArray(data))       rawWallets = data;
 
-    const instructions: Record<string, unknown>[] = wallets.map((w: Record<string, unknown>) => {
-      const currency = String(w.currency ?? '').toUpperCase();
-      const details  = w.user_bank_details as Record<string, unknown> | undefined ?? {};
-      return { currency, ...details, wallet_id: w.wallet_id ?? w.id };
-    }).filter(i => i.currency);
+    const instructions = rawWallets.map((w: Record<string, unknown>) => {
+      // currency is a nested object: { code: 'CAD', name: 'Canadian Dollar', ... }
+      const cur  = w.currency as Record<string, unknown> | string | undefined;
+      const code = (typeof cur === 'object' && cur !== null)
+        ? String((cur as Record<string, unknown>).code ?? '').toUpperCase()
+        : String(cur ?? '').toUpperCase();
+
+      // bank details may be in user_bank_details or directly on the wallet
+      const details = (w.user_bank_details as Record<string, unknown> | undefined) ?? w;
+
+      return {
+        currency:       code,
+        bank_name:      details.bank_name,
+        account_name:   details.account_name,
+        account_number: details.account_number,
+        iban:           details.iban,
+        swift:          details.swift,
+        sort_code:      details.sort_code,
+        send_to_email:  details.send_to_email ?? (code === 'CAD' ? details.account_number : undefined),
+        wallet_id:      String(w.wallet_id ?? w.id ?? ''),
+      };
+    }).filter(i => i.currency && i.currency !== '[OBJECT OBJECT]');
 
     res.json({
       success: true,

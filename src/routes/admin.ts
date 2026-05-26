@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { createApiKey, listApiKeys, revokeApiKey } from '../lib/keyStore';
 import { creditBalance, getAllBalances, getTransactions } from '../lib/ledger';
 import { listPendingDeposits, assignDeposit, ignoreDeposit } from '../lib/deposits';
+import { listUsers, listPendingKyc, getKyc, updateKycStatus } from '../lib/userStore';
 
 const router = Router();
 
@@ -128,6 +129,57 @@ router.get('/ledger/:key_id/transactions', async (req: Request, res: Response, n
   } catch (err) {
     next(err);
   }
+});
+
+// ── Users & KYC ──────────────────────────────────────────────────────────
+
+// GET /admin/users — list all B2C users
+router.get('/users', async (_req: Request, res: Response, next: NextFunction) => {
+  try {
+    const users = await listUsers(200);
+    res.json({ success: true, data: { users, count: users.length } });
+  } catch (err) { next(err); }
+});
+
+// GET /admin/users/kyc/pending — list submissions awaiting review
+router.get('/users/kyc/pending', async (_req: Request, res: Response, next: NextFunction) => {
+  try {
+    const records = await listPendingKyc();
+    res.json({ success: true, data: { records, count: records.length } });
+  } catch (err) { next(err); }
+});
+
+// GET /admin/users/:user_id/kyc — full KYC record for one user
+router.get('/users/:user_id/kyc', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const record = await getKyc(req.params.user_id);
+    if (!record) { res.status(404).json({ success: false, message: 'KYC record not found' }); return; }
+    res.json({ success: true, data: record });
+  } catch (err) { next(err); }
+});
+
+const kycActionSchema = z.object({
+  notes: z.string().max(500).optional(),
+});
+
+// POST /admin/users/:user_id/kyc/approve
+router.post('/users/:user_id/kyc/approve', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const parsed = kycActionSchema.safeParse(req.body);
+    const notes  = parsed.success ? parsed.data.notes : undefined;
+    await updateKycStatus(req.params.user_id, 'approved', notes);
+    res.json({ success: true, message: `KYC approved for ${req.params.user_id}` });
+  } catch (err) { next(err); }
+});
+
+// POST /admin/users/:user_id/kyc/reject
+router.post('/users/:user_id/kyc/reject', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const parsed = kycActionSchema.safeParse(req.body);
+    const notes  = parsed.success ? parsed.data.notes : 'Rejected by admin';
+    await updateKycStatus(req.params.user_id, 'rejected', notes);
+    res.json({ success: true, message: `KYC rejected for ${req.params.user_id}` });
+  } catch (err) { next(err); }
 });
 
 // ── Pending Deposits ──────────────────────────────────────────────────────
