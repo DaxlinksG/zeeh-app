@@ -336,14 +336,13 @@ router.post('/transfer', requireKyc, async (req: Request, res: Response, next: N
 });
 
 // ── Swap — KYC required ────────────────────────────────────────────────────
+// B2C swaps are settled purely at the ledger level.
+// Zeeh manages the actual GTP treasury position separately.
 const swapSchema = z.object({
-  from_wallet_id: z.string().min(1),
-  to_wallet_id:   z.string().min(1),
-  amount:         z.string().regex(/^\d+(\.\d{1,2})?$/),
-  from_currency:  z.string().length(3).toUpperCase(),
-  to_currency:    z.string().length(3).toUpperCase(),
-  lock_rate:      z.boolean().optional().default(false),
-  reference:      z.string().max(100).optional(),
+  amount:        z.string().regex(/^\d+(\.\d{1,2})?$/),
+  from_currency: z.string().length(3).toUpperCase(),
+  to_currency:   z.string().length(3).toUpperCase(),
+  reference:     z.string().max(100).optional(),
 });
 
 router.post('/swap', requireKyc, async (req: Request, res: Response, next: NextFunction) => {
@@ -355,17 +354,25 @@ router.post('/swap', requireKyc, async (req: Request, res: Response, next: NextF
     const body   = parsed.data;
     const userId = req.user!.user_id;
 
-    // Get live rate
-    const rateRes  = await gtp.get(`/rates/${body.from_currency}/${body.to_currency}`);
-    const entry    = rateRes.data.data as { buy_rate: string; updated_at: string; timestamp: string };
-    const rawRate  = parseFloat(entry.buy_rate);
-    const quote    = buildQuote(body.from_currency, body.to_currency, rawRate, entry.timestamp, entry.updated_at, 'live_market');
-    const conv     = calcConversion(parseFloat(body.amount), quote);
+    if (body.from_currency === body.to_currency) {
+      res.status(400).json({ success: false, message: 'from_currency and to_currency must differ' }); return;
+    }
+
+    // 1. Fetch live rate from GTP (pricing only — no GTP wallet call)
+    const rateRes = await gtp.get(`/rates/${body.from_currency}/${body.to_currency}`);
+    const entry   = rateRes.data.data as { buy_rate?: string; updated_at?: string; timestamp?: string } | undefined;
+    const rawRate = parseFloat(entry?.buy_rate ?? '0');
+    if (!rawRate || isNaN(rawRate)) {
+      res.status(422).json({ success: false, message: `Exchange rate not available for ${body.from_currency} → ${body.to_currency}` }); return;
+    }
+    const quote     = buildQuote(body.from_currency, body.to_currency, rawRate, entry?.timestamp ?? '', entry?.updated_at ?? '', 'live_market');
+    const conv      = calcConversion(parseFloat(body.amount), quote);
     const reference = body.reference ?? `SWAP-${Date.now()}`;
 
-    // Debit from_currency
+    // 2. Debit from_currency
     try {
-      await debitBalance(userId, body.from_currency, body.amount, 'swap_debit', reference, `Swap ${body.amount} ${body.from_currency} → ${body.to_currency}`);
+      await debitBalance(userId, body.from_currency, body.amount, 'swap_debit', reference,
+        `Swap ${body.amount} ${body.from_currency} → ${body.to_currency}`);
     } catch (err) {
       if (err instanceof InsufficientBalanceError) {
         res.status(402).json({ success: false, message: err.message, data: { required: err.required, available: err.available, currency: err.currency } }); return;
@@ -373,24 +380,21 @@ router.post('/swap', requireKyc, async (req: Request, res: Response, next: NextF
       throw err;
     }
 
-    // Execute swap with GTP
-    const swapRes = await gtp.post('/swap', {
-      from_wallet_id: body.from_wallet_id, to_wallet_id: body.to_wallet_id,
-      amount: body.amount, from_currency: body.from_currency,
-      to_currency: body.to_currency, lock_rate: body.lock_rate,
-    });
+    // 3. Credit to_currency — refund from_currency if this fails
+    try {
+      await creditBalance(userId, body.to_currency, conv.toAmount.toFixed(2), reference,
+        `Swap credit ${body.from_currency} → ${body.to_currency}`);
+    } catch (err) {
+      await refundBalance(userId, body.from_currency, body.amount, reference, 'Swap credit failed').catch(() => {});
+      throw err;
+    }
 
-    // Credit to_currency
-    await creditBalance(userId, body.to_currency, conv.toAmount.toFixed(2), reference, `Swap credit ${body.from_currency} → ${body.to_currency}`)
-      .catch(() => {/* reconcile via webhook */});
-
-    auditLog('user.swap', req, { user_id: userId, from_currency: body.from_currency, to_currency: body.to_currency, from_amount: conv.fromAmount, to_amount: conv.toAmount });
+    auditLog('user.swap', req, { user_id: userId, from_currency: body.from_currency, to_currency: body.to_currency, from_amount: conv.fromAmount, to_amount: conv.toAmount, rate: conv.customerRate });
 
     res.status(201).json({
       success: true,
       message: 'Swap executed successfully',
       data: {
-        swap: swapRes.data.data?.swap ?? swapRes.data.data,
         settlement: {
           from_amount:   conv.fromAmount,
           from_currency: body.from_currency,
