@@ -23,6 +23,20 @@ import { createPendingDeposit } from './lib/deposits';
 const app = express();
 
 app.use(cors());
+// Capture raw body for webhook signature verification BEFORE json parsing
+app.use((req, _res, next) => {
+  if (req.path === '/webhooks/receive') {
+    let raw = Buffer.alloc(0);
+    req.on('data', (chunk: Buffer) => { raw = Buffer.concat([raw, chunk]); });
+    req.on('end', () => {
+      (req as express.Request & { rawBody?: Buffer }).rawBody = raw;
+      try { (req as express.Request & { body: unknown }).body = JSON.parse(raw.toString('utf-8')); } catch { /* not JSON */ }
+      next();
+    });
+  } else {
+    next();
+  }
+});
 app.use(express.json());
 app.use(requestId);    // attach x-request-id to every request
 app.use(httpLogger);   // log every HTTP request
@@ -156,6 +170,41 @@ app.use('/docs', swaggerUi.serve, swaggerUi.setup(openapiSpec, {
 
 // Webhook receiver — GTP calls this, no API key needed
 app.post('/webhooks/receive', async (req, res) => {
+  // ── Signature verification (HMAC-SHA256) ─────────────────────────────────
+  // Expedier signs every webhook with HMAC-SHA256 of the raw body using your
+  // WEBHOOK_SECRET. If the secret is configured we MUST verify; if not set
+  // (local dev / sandbox without secret) we warn and continue.
+  const webhookSecret = process.env.WEBHOOK_SECRET;
+  if (webhookSecret) {
+    const { createHmac, timingSafeEqual } = await import('crypto');
+    const rawBody   = (req as express.Request & { rawBody?: Buffer }).rawBody;
+    const signature = req.headers['x-gtp-signature'] as string | undefined
+                   ?? req.headers['x-signature']     as string | undefined
+                   ?? req.headers['x-webhook-signature'] as string | undefined;
+    if (!rawBody || !signature) {
+      console.warn('⚠️  Webhook missing raw body or signature header — rejected');
+      res.status(401).json({ error: 'Missing signature' });
+      return;
+    }
+    const expected = createHmac('sha256', webhookSecret).update(rawBody).digest('hex');
+    // Signature may arrive as "sha256=<hex>" or plain hex
+    const received  = signature.startsWith('sha256=') ? signature.slice(7) : signature;
+    try {
+      const match = timingSafeEqual(Buffer.from(expected, 'hex'), Buffer.from(received, 'hex'));
+      if (!match) {
+        console.warn('⚠️  Webhook signature mismatch — rejected');
+        res.status(401).json({ error: 'Invalid signature' });
+        return;
+      }
+    } catch {
+      res.status(401).json({ error: 'Invalid signature format' });
+      return;
+    }
+    console.log('✅  Webhook signature verified');
+  } else {
+    console.warn('⚠️  WEBHOOK_SECRET not set — skipping signature check (sandbox mode)');
+  }
+
   const event     = req.body as Record<string, unknown>;
   const eventType = String(event.type ?? event.event ?? 'unknown');
   const ts        = new Date().toISOString();
