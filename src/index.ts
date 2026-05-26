@@ -25,6 +25,9 @@ app.use(httpLogger);   // log every HTTP request
 
 app.get('/health', (_req, res) => res.json({ status: 'ok' }));
 
+// Root → redirect to docs
+app.get('/', (_req, res) => res.redirect('/docs'));
+
 // Raw OpenAPI spec
 app.get('/openapi.json', (_req, res) => res.json(openapiSpec));
 
