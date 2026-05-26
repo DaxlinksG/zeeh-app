@@ -15,6 +15,9 @@ import accountRouter from './routes/account';
 import webhooksRouter from './routes/webhooks';
 import adminRouter from './routes/admin';
 import balanceRouter from './routes/balance';
+import authRouter from './routes/auth';
+import meRouter from './routes/me';
+import { requireUser } from './middleware/userAuth';
 import { createPendingDeposit } from './lib/deposits';
 
 const app = express();
@@ -196,7 +199,13 @@ app.post('/webhooks/receive', async (req, res) => {
 // ── Admin routes (x-admin-key, no client API key needed) ──────────────────
 app.use('/admin', adminRouter);
 
-// ── Protected routes ───────────────────────────────────────────────────────
+// ── B2C auth (public — register / login / refresh / logout) ───────────────
+app.use('/auth', authRouter);
+
+// ── B2C user routes (JWT protected) ───────────────────────────────────────
+app.use('/me', requireUser, meRouter);
+
+// ── B2B protected routes (API key) ────────────────────────────────────────
 app.use(requireApiKey);
 app.use(apiLimiter);                                  // 120 req/min global limit
 
