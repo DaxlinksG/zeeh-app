@@ -11,23 +11,11 @@ export default function Exchange() {
   const [to,      setTo]      = useState('NGN');
   const [amount,  setAmount]  = useState('');
   const [rate,    setRate]    = useState<number | null>(null);
-  const [wallets, setWallets] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(false);
   const [rateLoading, setRateLoading] = useState(false);
   const [done,    setDone]    = useState<{ from_amount: number; to_amount: number; rate: number } | null>(null);
 
   const needsKyc = user?.kyc_status !== 'approved';
-
-  // Load wallet IDs
-  useEffect(() => {
-    api.get('/me/deposit').then(r => {
-      const map: Record<string, string> = {};
-      (r.data.data?.instructions ?? []).forEach((i: { currency: string; wallet_id: string }) => {
-        if (i.currency && i.wallet_id) map[i.currency] = i.wallet_id;
-      });
-      setWallets(map);
-    }).catch(() => {});
-  }, []);
 
   // Fetch rate when from/to changes
   useEffect(() => {
@@ -42,14 +30,9 @@ export default function Exchange() {
   const toAmount = rate && amount ? (parseFloat(amount) * rate).toFixed(2) : '';
 
   async function handleSwap() {
-    if (!wallets[from] || !wallets[to]) {
-      toast('Wallet IDs not loaded. Try refreshing.', 'err'); return;
-    }
     setLoading(true);
     try {
       const { data } = await api.post('/me/swap', {
-        from_wallet_id: wallets[from],
-        to_wallet_id:   wallets[to],
         amount, from_currency: from, to_currency: to,
       });
       const s = data.data?.settlement;
