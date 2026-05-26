@@ -4,11 +4,12 @@ import axios from 'axios';
 import { API_BASE } from '../lib/api';
 
 interface AuthUser {
-  user_id:    string;
-  email:      string;
-  first_name: string;
-  last_name:  string;
-  kyc_status: string;
+  user_id:        string;
+  email:          string;
+  first_name:     string;
+  last_name:      string;
+  kyc_status:     string;
+  email_verified?: boolean;
 }
 
 interface AuthState {

@@ -60,7 +60,7 @@ export default function Deposit() {
   const fields: [string, string][] = current
     ? (Object.entries(FIELD_LABELS) as [string, string][])
         .map(([key, label]) => {
-          const val = (current as Record<string, unknown>)[key];
+          const val = (current as unknown as Record<string, unknown>)[key];
           return val ? [label, String(val)] : null;
         })
         .filter((x): x is [string, string] => x !== null)

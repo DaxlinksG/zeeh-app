@@ -1,8 +1,91 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import api from '../lib/api';
+import axios from 'axios';
+import api, { API_BASE } from '../lib/api';
 import { useAuthStore } from '../store/authStore';
 import { toast } from '../components/Toast';
+
+/** Inline banner + OTP modal for users who skipped email verification */
+function EmailVerifyBanner() {
+  const [showModal, setShowModal] = useState(false);
+  const [otp,       setOtp]       = useState('');
+  const [loading,   setLoading]   = useState(false);
+  const { accessToken, updateUser } = useAuthStore(s => ({ accessToken: s.accessToken, updateUser: s.updateUser }));
+
+  async function sendResend() {
+    if (!accessToken) return;
+    try {
+      await axios.post(`${API_BASE}/auth/resend-otp`, {}, { headers: { Authorization: `Bearer ${accessToken}` } });
+      toast('Verification code sent — check your email.');
+      setShowModal(true);
+    } catch { toast('Could not send code. Try again.', 'err'); }
+  }
+
+  async function handleVerify(e: React.FormEvent) {
+    e.preventDefault();
+    if (!accessToken) return;
+    setLoading(true);
+    try {
+      await axios.post(
+        `${API_BASE}/auth/verify-email`,
+        { otp: otp.replace(/\s/g, '') },
+        { headers: { Authorization: `Bearer ${accessToken}` } },
+      );
+      updateUser({ email_verified: true });
+      toast('Email verified! ✅');
+      setShowModal(false);
+    } catch (err: unknown) {
+      toast((axios.isAxiosError(err) && err.response?.data?.message) || 'Incorrect code', 'err');
+    } finally { setLoading(false); }
+  }
+
+  return (
+    <>
+      <div style={{
+        background: 'rgba(108,99,255,.1)', border: '1px solid rgba(108,99,255,.35)',
+        borderRadius: 'var(--radius)', padding: '1rem 1.2rem',
+        marginBottom: '1.5rem', display: 'flex', alignItems: 'center',
+        justifyContent: 'space-between', gap: '1rem',
+      }}>
+        <div>
+          <strong style={{ color: 'var(--accent)' }}>📧 Verify your email</strong>
+          <div style={{ fontSize: '.84rem', color: 'var(--muted)', marginTop: '.2rem' }}>
+            Verify your email address to secure your account and receive transaction alerts.
+          </div>
+        </div>
+        <button className="btn btn-primary" style={{ whiteSpace: 'nowrap', fontSize: '.84rem' }} onClick={sendResend}>
+          Verify now
+        </button>
+      </div>
+
+      {showModal && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.7)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 9999, padding: '1rem' }}>
+          <div className="card" style={{ width: '100%', maxWidth: 380 }}>
+            <div style={{ textAlign: 'center', marginBottom: '1.5rem' }}>
+              <div style={{ fontSize: '2rem', marginBottom: '.4rem' }}>📧</div>
+              <div style={{ fontWeight: 700, marginBottom: '.3rem' }}>Enter your code</div>
+              <div style={{ fontSize: '.85rem', color: 'var(--muted)' }}>Check your email for a 6-digit code.</div>
+            </div>
+            <form onSubmit={handleVerify}>
+              <input
+                type="text" inputMode="numeric" autoComplete="one-time-code" maxLength={6}
+                placeholder="000000" value={otp} onChange={e => setOtp(e.target.value.replace(/\D/g, ''))}
+                style={{ width: '100%', textAlign: 'center', fontSize: '1.6rem', letterSpacing: '0.3em', fontFamily: 'monospace', marginBottom: '1rem', padding: '.7rem', background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 'var(--radius)', color: 'var(--text)' }}
+                required
+              />
+              <div style={{ display: 'flex', gap: '.6rem' }}>
+                <button type="button" className="btn" style={{ flex: 1 }} onClick={() => setShowModal(false)}>Cancel</button>
+                <button type="submit" className="btn btn-primary" style={{ flex: 2 }} disabled={loading || otp.length !== 6}>
+                  {loading ? <span className="spinner" /> : 'Verify'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
 
 interface Balance { currency: string; balance: string; available: string; }
 
@@ -45,6 +128,11 @@ export default function Dashboard() {
         </h1>
         <p style={{ color: 'var(--muted)', marginTop: '.3rem' }}>Here's your account overview</p>
       </div>
+
+      {/* Email verification banner */}
+      {user && user.email_verified === false && (
+        <EmailVerifyBanner />
+      )}
 
       {/* KYC banner */}
       {user?.kyc_status !== 'approved' && (

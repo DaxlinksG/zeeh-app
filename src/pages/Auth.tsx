@@ -5,17 +5,23 @@ import { useAuthStore } from '../store/authStore';
 import { API_BASE } from '../lib/api';
 import { toast } from '../components/Toast';
 
-type Tab = 'login' | 'register';
+type Tab    = 'login' | 'register';
+type Screen = 'auth' | 'verify-email';
 
 const COUNTRIES = ['Canada','Nigeria','United States','United Kingdom','Germany','France','Ghana','Kenya','South Africa','Other'];
 
 export default function Auth() {
-  const [tab, setTab] = useState<Tab>('login');
+  const [tab,    setTab]    = useState<Tab>('login');
+  const [screen, setScreen] = useState<Screen>('auth');
   const [loading, setLoading] = useState(false);
   const navigate = useNavigate();
-  const setAuth = useAuthStore(s => s.setAuth);
+  const { setAuth, updateUser, accessToken } = useAuthStore(s => ({
+    setAuth:     s.setAuth,
+    updateUser:  s.updateUser,
+    accessToken: s.accessToken,
+  }));
 
-  /* LOGIN */
+  /* ── LOGIN ────────────────────────────────────────────────────────────── */
   const [loginEmail, setLoginEmail] = useState('');
   const [loginPass,  setLoginPass]  = useState('');
 
@@ -32,7 +38,7 @@ export default function Auth() {
     } finally { setLoading(false); }
   }
 
-  /* REGISTER */
+  /* ── REGISTER ─────────────────────────────────────────────────────────── */
   const [reg, setReg] = useState({ email: '', password: '', first_name: '', last_name: '', phone: '', country: 'Canada' });
 
   async function handleRegister(e: React.FormEvent) {
@@ -42,25 +48,109 @@ export default function Auth() {
     try {
       const { data } = await axios.post(`${API_BASE}/auth/register`, reg);
       setAuth(data.data.user, data.data.access_token, data.data.refresh_token);
-      navigate('/dashboard');
-      toast('Welcome to Zeeh Africa! 🎉');
+      toast('Account created! Check your email for a verification code.');
+      setScreen('verify-email');
     } catch (err: unknown) {
       const msg = (axios.isAxiosError(err) && err.response?.data?.message) || 'Registration failed';
       toast(msg, 'err');
     } finally { setLoading(false); }
   }
 
+  /* ── VERIFY EMAIL ─────────────────────────────────────────────────────── */
+  const [otp, setOtp] = useState('');
+
+  async function handleVerify(e: React.FormEvent) {
+    e.preventDefault();
+    if (!accessToken) { toast('Session expired. Please log in again.', 'err'); setScreen('auth'); return; }
+    setLoading(true);
+    try {
+      await axios.post(
+        `${API_BASE}/auth/verify-email`,
+        { otp: otp.replace(/\s/g, '') },
+        { headers: { Authorization: `Bearer ${accessToken}` } },
+      );
+      updateUser({ email_verified: true });
+      toast('Email verified! 🎉');
+      navigate('/dashboard');
+    } catch (err: unknown) {
+      const status = axios.isAxiosError(err) ? err.response?.status : 0;
+      if (status === 429) toast('Too many attempts. Request a new code.', 'err');
+      else if (status === 410) toast('Code has expired. Request a new one.', 'err');
+      else toast((axios.isAxiosError(err) && err.response?.data?.message) || 'Incorrect code', 'err');
+    } finally { setLoading(false); }
+  }
+
+  async function handleResendOtp() {
+    if (!accessToken) { toast('Session expired. Please log in again.', 'err'); return; }
+    try {
+      await axios.post(`${API_BASE}/auth/resend-otp`, {}, { headers: { Authorization: `Bearer ${accessToken}` } });
+      toast('New code sent — check your email.');
+    } catch {
+      toast('Could not resend code. Please try again.', 'err');
+    }
+  }
+
+  /* ── SHARED SHELL ─────────────────────────────────────────────────────── */
   return (
     <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '1rem', background: 'var(--bg)' }}>
       <div style={{ width: '100%', maxWidth: 440 }}>
+
         {/* Brand */}
         <div style={{ textAlign: 'center', marginBottom: '2rem' }}>
           <div style={{ fontSize: '1.8rem', fontWeight: 700, marginBottom: '.3rem' }}>
             Zeeh <span style={{ color: 'var(--accent2)' }}>Africa</span>
           </div>
-          <div style={{ color: 'var(--muted)', fontSize: '.9rem' }}>Send, receive & exchange across borders</div>
+          <div style={{ color: 'var(--muted)', fontSize: '.9rem' }}>Send, receive &amp; exchange across borders</div>
         </div>
 
+        {/* ── Email verification screen ──────────────────────────────────── */}
+        {screen === 'verify-email' ? (
+          <div className="card">
+            <div style={{ textAlign: 'center', marginBottom: '1.5rem' }}>
+              <div style={{ fontSize: '2.5rem', marginBottom: '.5rem' }}>📧</div>
+              <div style={{ fontSize: '1.1rem', fontWeight: 700, marginBottom: '.4rem' }}>Check your email</div>
+              <div style={{ color: 'var(--muted)', fontSize: '.88rem' }}>
+                We sent a 6-digit code to <strong style={{ color: 'var(--text)' }}>{reg.email || 'your email'}</strong>.
+                Enter it below to verify your account.
+              </div>
+            </div>
+
+            <form onSubmit={handleVerify}>
+              <div className="form-group">
+                <label>Verification code</label>
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  autoComplete="one-time-code"
+                  maxLength={6}
+                  placeholder="000000"
+                  value={otp}
+                  onChange={e => setOtp(e.target.value.replace(/\D/g, ''))}
+                  style={{ textAlign: 'center', fontSize: '1.6rem', letterSpacing: '0.3em', fontFamily: 'monospace' }}
+                  required
+                />
+              </div>
+              <button className="btn btn-primary btn-full" disabled={loading || otp.length !== 6} style={{ marginTop: '.5rem' }}>
+                {loading ? <span className="spinner" /> : 'Verify email'}
+              </button>
+            </form>
+
+            <div style={{ textAlign: 'center', marginTop: '1.2rem', fontSize: '.85rem', color: 'var(--muted)' }}>
+              Didn't get the code?{' '}
+              <button onClick={handleResendOtp} className="btn" style={{ padding: '0', background: 'none', border: 'none', color: 'var(--accent)', fontSize: '.85rem', fontWeight: 600, cursor: 'pointer' }}>
+                Resend
+              </button>
+            </div>
+
+            <div style={{ textAlign: 'center', marginTop: '.6rem', fontSize: '.82rem', color: 'var(--muted)' }}>
+              <button onClick={() => { setScreen('auth'); navigate('/dashboard'); }} className="btn" style={{ padding: '0', background: 'none', border: 'none', color: 'var(--muted)', fontSize: '.82rem', cursor: 'pointer' }}>
+                Skip for now →
+              </button>
+            </div>
+          </div>
+        ) : (
+
+        /* ── Login / Register screen ──────────────────────────────────── */
         <div className="card">
           {/* Tab switcher */}
           <div style={{ display: 'flex', gap: '.3rem', marginBottom: '1.6rem', background: 'var(--bg)', borderRadius: 8, padding: '.3rem' }}>
@@ -129,6 +219,7 @@ export default function Auth() {
             </form>
           )}
         </div>
+        )}
       </div>
     </div>
   );
