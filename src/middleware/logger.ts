@@ -14,7 +14,7 @@ export function requestId(req: Request, res: Response, next: NextFunction): void
 export const httpLogger = morgan(
   ':date[iso] :method :url :status :res[content-length]b :response-time ms | ip=:remote-addr id=:req[x-request-id]',
   {
-    skip: (req) => req.path === '/health', // don't clutter logs with health checks
+    skip: (req) => (req as Request).path === '/health', // don't clutter logs with health checks
   },
 );
 
