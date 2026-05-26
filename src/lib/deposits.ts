@@ -124,21 +124,31 @@ export async function assignDeposit(
     { deposit_id: depositId, gtp_reference: deposit.gtp_reference },
   );
 
-  // Mark the deposit as assigned
+  // Mark the deposit as assigned — ConditionExpression prevents race condition
+  // if two admins click assign simultaneously
   const now = new Date().toISOString();
-  await db.send(new UpdateCommand({
-    TableName: DEPOSITS_TABLE,
-    Key: { deposit_id: depositId },
-    UpdateExpression: 'SET #s = :s, assigned_to = :at, assigned_at = :aa, assigned_by = :ab, credit_ref = :cr',
-    ExpressionAttributeNames:  { '#s': 'status' },
-    ExpressionAttributeValues: {
-      ':s':  'assigned',
-      ':at': keyId,
-      ':aa': now,
-      ':ab': assignedBy,
-      ':cr': creditRef,
-    },
-  }));
+  try {
+    await db.send(new UpdateCommand({
+      TableName: DEPOSITS_TABLE,
+      Key: { deposit_id: depositId },
+      UpdateExpression: 'SET #s = :s, assigned_to = :at, assigned_at = :aa, assigned_by = :ab, credit_ref = :cr',
+      ConditionExpression: '#s = :unassigned',
+      ExpressionAttributeNames:  { '#s': 'status' },
+      ExpressionAttributeValues: {
+        ':s':           'assigned',
+        ':at':          keyId,
+        ':aa':          now,
+        ':ab':          assignedBy,
+        ':cr':          creditRef,
+        ':unassigned':  'unassigned',
+      },
+    }));
+  } catch (err: unknown) {
+    if ((err as { name?: string }).name === 'ConditionalCheckFailedException') {
+      throw new Error(`Deposit ${depositId} was already assigned by another admin`);
+    }
+    throw err;
+  }
 
   return { ...deposit, status: 'assigned', assigned_to: keyId, assigned_at: now, assigned_by: assignedBy, credit_ref: creditRef };
 }

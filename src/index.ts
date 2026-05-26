@@ -19,6 +19,7 @@ import authRouter from './routes/auth';
 import meRouter from './routes/me';
 import { requireUser } from './middleware/userAuth';
 import { createPendingDeposit } from './lib/deposits';
+import { runReconciliation, getSnapshots, getLatestSnapshot } from './lib/treasury';
 
 const app = express();
 
@@ -248,6 +249,30 @@ app.post('/webhooks/receive', async (req, res) => {
 // ── Admin routes (x-admin-key, no client API key needed) ──────────────────
 app.use('/admin', adminRouter);
 
+// ── Admin: Treasury endpoints (inline — same admin key auth) ──────────────
+const adminKeyCheck = (req: express.Request, res: express.Response, next: express.NextFunction) => {
+  if (req.headers['x-admin-key'] !== process.env.ADMIN_KEY) {
+    res.status(401).json({ success: false, message: 'Invalid admin key' }); return;
+  }
+  next();
+};
+
+app.get('/admin/treasury/latest', adminKeyCheck, async (_req, res) => {
+  const snap = await getLatestSnapshot();
+  res.json({ success: true, data: snap });
+});
+
+app.get('/admin/treasury/snapshots', adminKeyCheck, async (req, res) => {
+  const limit = Math.min(parseInt(req.query.limit as string ?? '20', 10), 50);
+  const snaps = await getSnapshots(limit);
+  res.json({ success: true, data: { snapshots: snaps, count: snaps.length } });
+});
+
+app.post('/admin/treasury/reconcile', adminKeyCheck, async (_req, res) => {
+  const snap = await runReconciliation('manual');
+  res.json({ success: true, message: 'Reconciliation complete', data: snap });
+});
+
 // ── B2C auth (public — register / login / refresh / logout) ───────────────
 app.use('/auth', authRouter);
 
@@ -274,6 +299,25 @@ app.listen(PORT, () => {
   console.log(`   Server  : http://localhost:${PORT}`);
   console.log(`   Docs    : http://localhost:${PORT}/docs`);
   console.log(`   Health  : http://localhost:${PORT}/health\n`);
+
+  // ── Treasury reconciliation scheduler ─────────────────────────────────────
+  // Runs every TREASURY_INTERVAL_MS (default 15 min). Logs to CloudWatch.
+  // Any critical flag (shortfall, fraud) prints bold error lines.
+  const intervalMs = parseInt(process.env.TREASURY_INTERVAL_MS ?? String(15 * 60 * 1000), 10);
+  console.log(`🏦  Treasury reconciliation scheduled every ${intervalMs / 1000}s`);
+
+  // Initial run after 30s (give server time to stabilise)
+  setTimeout(() => {
+    runReconciliation('scheduled').catch(err =>
+      console.error('Treasury reconciliation failed:', err),
+    );
+  }, 30_000);
+
+  setInterval(() => {
+    runReconciliation('scheduled').catch(err =>
+      console.error('Treasury reconciliation failed:', err),
+    );
+  }, intervalMs);
 });
 
 export default app;
