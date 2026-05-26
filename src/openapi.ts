@@ -1,57 +1,67 @@
 export const openapiSpec = {
   openapi: '3.0.3',
   info: {
-    title: 'Zeeh Africa — Cross-Border Payments API',
+    title: 'Zeeh Africa — Payments API',
     version: '1.0.0',
     description: `
 ## Overview
-**Zeeh Africa** is a cross-border payment API enabling fast, affordable money movement between Canada, Nigeria, the US, UK, and Europe.
+**Zeeh Africa** provides a fast, affordable API for cross-border money movement between Canada, Nigeria, the US, UK, and Europe.
 
 ---
 
 ## Quick Start
 
-1. **Get your API key** — contact us at zeehafricah@gmail.com
-2. **Add the header** to every request:
+\`\`\`bash
+# 1. Get a live rate
+curl https://api.zeehfi.ca/api/rates/CAD/NGN \\
+  -H "x-api-key: YOUR_KEY"
+
+# 2. Preview a conversion
+curl "https://api.zeehfi.ca/api/rates/convert?amount=500&from_currency=CAD&to_currency=NGN" \\
+  -H "x-api-key: YOUR_KEY"
+
+# 3. Send money
+curl -X POST https://api.zeehfi.ca/api/transfers \\
+  -H "x-api-key: YOUR_KEY" \\
+  -H "Content-Type: application/json" \\
+  -d '{"amount":"500.00","currency":"NGN","bank_id":10,"account_number":"0123456789","account_name":"John Doe","client_reference":"TRF-001"}'
 \`\`\`
-x-api-key: YOUR_API_KEY
-\`\`\`
-3. **Check live rates** → \`GET /api/rates\`
-4. **Send a payment** → \`POST /api/transfers\`
 
 ---
 
 ## Authentication
 
-All endpoints require your API key in the **\`x-api-key\`** header.
+Every request (except \`/health\`) requires your API key in the header:
 
-**Public endpoints (no key needed):**
-- \`GET /health\`
-- \`POST /webhooks/receive\`
+\`\`\`
+x-api-key: YOUR_API_KEY
+\`\`\`
+
+Contact **zeehafricah@gmail.com** to get your key.
 
 ---
 
 ## Rate Limits
 
-| Endpoint group | Limit |
+| Scope | Limit |
 |---|---|
-| Global (all endpoints) | 120 requests / minute |
-| Transfers & Swaps | 20 requests / minute |
-| Rate quotes | 300 requests / minute |
+| Global | 120 req / min |
+| Transfers & Swaps | 20 req / min |
+| Rates | 300 req / min |
 
-Exceeding the limit returns **HTTP 429**. Wait 60 seconds and retry.
+Returns **HTTP 429** when exceeded. Retry after 60 seconds.
 
 ---
 
-## Supported Currencies
+## Supported Corridors
 
-| Currency | Send | Receive | Method |
-|---|---|---|---|
-| 🇨🇦 CAD | ✅ | ✅ | Interac eTransfer |
-| 🇳🇬 NGN | ✅ | ✅ | Bank transfer |
-| 🇺🇸 USD | ✅ | ✅ | Wire transfer |
-| 🇬🇧 GBP | ✅ | ✅ | Bank transfer |
-| 🇪🇺 EUR | ✅ | ✅ | Bank transfer |
+| | 🇨🇦 CAD | 🇳🇬 NGN | 🇺🇸 USD | 🇬🇧 GBP | 🇪🇺 EUR |
+|---|:---:|:---:|:---:|:---:|:---:|
+| 🇨🇦 CAD | — | ✅ | ✅ | ✅ | ✅ |
+| 🇳🇬 NGN | ✅ | — | ✅ | ✅ | ✅ |
+| 🇺🇸 USD | ✅ | ✅ | — | ✅ | ✅ |
+| 🇬🇧 GBP | ✅ | ✅ | ✅ | — | ✅ |
+| 🇪🇺 EUR | ✅ | ✅ | ✅ | ✅ | — |
     `,
     contact: {
       name: 'Zeeh Africa Support',
@@ -64,21 +74,48 @@ Exceeding the limit returns **HTTP 429**. Wait 60 seconds and retry.
     { url: 'http://localhost:3000', description: 'Local development' },
   ],
   security: [{ ApiKeyAuth: [] }],
+
+  tags: [
+    { name: 'Rates',     description: 'Live exchange rates and conversion calculator' },
+    { name: 'Transfers', description: 'Send money to a bank account' },
+    { name: 'Swaps',     description: 'Convert between your wallets' },
+    { name: 'Wallets',   description: 'View balances and transaction history' },
+    { name: 'Banks',     description: 'Bank lookup and account validation' },
+    { name: 'Account',   description: 'Your account details and settings' },
+    { name: 'Webhooks',  description: 'Receive payment event notifications' },
+    { name: 'System',    description: 'Service health' },
+  ],
+
   components: {
     securitySchemes: {
       ApiKeyAuth: {
         type: 'apiKey',
         in: 'header',
         name: 'x-api-key',
-        description: 'Your Zeeh Africa API key. Contact zeehafricah@gmail.com to get one.',
+        description: 'API key obtained from Zeeh Africa. Contact zeehafricah@gmail.com.',
       },
     },
     schemas: {
+
+      // ── Error ──────────────────────────────────────────────────
       Error: {
         type: 'object',
         properties: {
           success: { type: 'boolean', example: false },
           message: { type: 'string', example: 'Invalid or missing API key' },
+        },
+      },
+      ValidationError: {
+        type: 'object',
+        properties: {
+          success: { type: 'boolean', example: false },
+          message: { type: 'string', example: 'Validation error' },
+          errors: {
+            type: 'object',
+            properties: {
+              fieldErrors: { type: 'object', additionalProperties: { type: 'array', items: { type: 'string' } } },
+            },
+          },
         },
       },
       RateLimitError: {
@@ -88,81 +125,152 @@ Exceeding the limit returns **HTTP 429**. Wait 60 seconds and retry.
           message: { type: 'string', example: 'Too many requests, please try again in 60 seconds.' },
         },
       },
+
+      // ── Rates ──────────────────────────────────────────────────
       RateQuote: {
         type: 'object',
         properties: {
           from_currency: { type: 'string', example: 'CAD' },
           to_currency:   { type: 'string', example: 'NGN' },
-          rate:          { type: 'number', example: 1267.5 },
-          inverse_rate:  { type: 'number', example: 0.000789 },
-          updated_at:    { type: 'string', format: 'date-time' },
-          timestamp:     { type: 'string', format: 'date-time' },
+          rate:          { type: 'number', example: 1267.5, description: 'How many units of to_currency per 1 unit of from_currency' },
+          inverse_rate:  { type: 'number', example: 0.000789, description: 'Reverse rate (to_currency → from_currency)' },
+          updated_at:    { type: 'string', format: 'date-time', example: '2026-05-26T08:00:00.000Z' },
         },
       },
-      ConversionResult: {
+
+      // ── Wallets ────────────────────────────────────────────────
+      Wallet: {
         type: 'object',
         properties: {
-          from_currency: { type: 'string', example: 'CAD' },
-          to_currency:   { type: 'string', example: 'NGN' },
-          from_amount:   { type: 'number', example: 1000 },
-          to_amount:     { type: 'number', example: 1267500 },
-          rate:          { type: 'number', example: 1267.5 },
-          updated_at:    { type: 'string', format: 'date-time' },
+          wallet_id:  { type: 'string', example: '2746' },
+          currency:   { type: 'string', example: 'CAD' },
+          balance:    { type: 'string', example: '4749.10' },
+          available:  { type: 'string', example: '4749.10' },
+          pending:    { type: 'string', example: '0.00' },
+          status:     { type: 'string', example: 'active' },
         },
       },
-      WalletBalance: {
-        type: 'object',
-        properties: {
-          currency: { type: 'string', example: 'CAD' },
-          balance: { type: 'string', example: '4749.10' },
-          available: { type: 'string', example: '4749.10' },
-          pending: { type: 'string', example: '0.00' },
-        },
-      },
+
+      // ── Transfers ──────────────────────────────────────────────
       Transfer: {
         type: 'object',
         properties: {
-          transfer_id: { type: 'string', example: '2332' },
-          gtp_transfer_id: { type: 'string', example: '8' },
-          status: { type: 'string', enum: ['processing', 'completed', 'failed'], example: 'processing' },
-          amount: { type: 'string', example: '250.00' },
-          currency: { type: 'string', example: 'CAD' },
+          transfer_id:       { type: 'string', example: '2332' },
+          status:            { type: 'string', enum: ['pending', 'processing', 'completed', 'failed'], example: 'processing' },
+          amount:            { type: 'string', example: '50000.00' },
+          currency:          { type: 'string', example: 'NGN' },
+          client_reference:  { type: 'string', example: 'TRF-001' },
+          description:       { type: 'string', example: 'Payout' },
           recipient: {
             type: 'object',
             properties: {
-              bank_name: { type: 'string', example: 'Interac' },
-              account_number: { type: 'string', example: 'recipient@example.com' },
-              account_name: { type: 'string', example: 'Jane Doe' },
+              account_name:   { type: 'string', example: 'John Doe' },
+              account_number: { type: 'string', example: '0123456789' },
+              bank_name:      { type: 'string', example: 'ACCESS BANK' },
             },
           },
-          client_reference: { type: 'string', example: 'TRF-CAD-001' },
           created_at: { type: 'string', format: 'date-time' },
+          updated_at: { type: 'string', format: 'date-time' },
         },
       },
-    },
-  },
-  paths: {
-    '/health': {
-      get: {
-        tags: ['System'],
-        summary: 'Health check',
-        description: 'Returns `ok` if the service is running. No authentication required.',
-        security: [],
-        responses: {
-          200: { description: 'Service is healthy', content: { 'application/json': { schema: { type: 'object', properties: { status: { type: 'string', example: 'ok' } } } } } },
+
+      // ── Swaps ──────────────────────────────────────────────────
+      Swap: {
+        type: 'object',
+        properties: {
+          swap_id:       { type: 'string', example: '881' },
+          status:        { type: 'string', enum: ['pending', 'processing', 'completed', 'failed'], example: 'completed' },
+          from_currency: { type: 'string', example: 'CAD' },
+          to_currency:   { type: 'string', example: 'NGN' },
+          from_amount:   { type: 'string', example: '1000.00' },
+          to_amount:     { type: 'string', example: '1267500.00' },
+          rate:          { type: 'number', example: 1267.5 },
+          reference:     { type: 'string', example: 'SWAP-001' },
+          created_at:    { type: 'string', format: 'date-time' },
+        },
+      },
+
+      // ── Banks ──────────────────────────────────────────────────
+      Bank: {
+        type: 'object',
+        properties: {
+          id:        { type: 'integer', example: 10 },
+          name:      { type: 'string', example: 'ACCESS BANK' },
+          code:      { type: 'string', example: '044' },
+          currency:  { type: 'string', example: 'NGN' },
+        },
+      },
+
+      // ── Pagination ─────────────────────────────────────────────
+      Pagination: {
+        type: 'object',
+        properties: {
+          total:       { type: 'integer', example: 42 },
+          page:        { type: 'integer', example: 1 },
+          page_size:   { type: 'integer', example: 20 },
+          total_pages: { type: 'integer', example: 3 },
         },
       },
     },
 
-    // ── RATES ────────────────────────────────────────────────────────────────
-    '/api/rates': {
+    // ── Reusable parameters ──────────────────────────────────────
+    parameters: {
+      PageParam: {
+        name: 'page', in: 'query',
+        description: 'Page number (starts at 1)',
+        schema: { type: 'integer', default: 1, minimum: 1 },
+      },
+      PageSizeParam: {
+        name: 'page_size', in: 'query',
+        description: 'Results per page',
+        schema: { type: 'integer', default: 20, minimum: 1, maximum: 100 },
+      },
+    },
+
+    // ── Reusable responses ───────────────────────────────────────
+    responses: {
+      Unauthorized: {
+        description: 'Invalid or missing API key',
+        content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } },
+      },
+      RateLimited: {
+        description: 'Too many requests',
+        content: { 'application/json': { schema: { $ref: '#/components/schemas/RateLimitError' } } },
+      },
+      NotFound: {
+        description: 'Resource not found',
+        content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { success: false, message: 'Not found' } } },
+      },
+    },
+  },
+
+  paths: {
+
+    // ── SYSTEM ────────────────────────────────────────────────────
+    '/health': {
       get: {
-        tags: ['Exchange Rates'],
-        summary: 'List all rates (spread applied)',
-        description: 'Returns every available currency pair with the spread-adjusted customer rate.',
+        tags: ['System'],
+        summary: 'Health check',
+        description: 'Returns `ok` if the service is running. No API key required.',
+        security: [],
         responses: {
           200: {
-            description: 'All rates with spread',
+            description: 'Service healthy',
+            content: { 'application/json': { schema: { type: 'object', properties: { status: { type: 'string', example: 'ok' } } } } },
+          },
+        },
+      },
+    },
+
+    // ── RATES ─────────────────────────────────────────────────────
+    '/api/rates': {
+      get: {
+        tags: ['Rates'],
+        summary: 'List all exchange rates',
+        description: 'Returns live rates for all supported currency pairs.',
+        responses: {
+          200: {
+            description: 'All live rates',
             content: {
               'application/json': {
                 schema: {
@@ -172,158 +280,307 @@ Exceeding the limit returns **HTTP 429**. Wait 60 seconds and retry.
                     data: {
                       type: 'object',
                       properties: {
-                        rates: { type: 'array', items: { $ref: '#/components/schemas/RateQuote' } },
-                        count: { type: 'integer', example: 6 },
+                        rates:     { type: 'array', items: { $ref: '#/components/schemas/RateQuote' } },
+                        count:     { type: 'integer', example: 8 },
                         timestamp: { type: 'string', format: 'date-time' },
                       },
+                    },
+                  },
+                },
+                example: {
+                  success: true,
+                  data: {
+                    rates: [
+                      { from_currency: 'CAD', to_currency: 'NGN', rate: 1267.5,  inverse_rate: 0.000789, updated_at: '2026-05-26T08:00:00.000Z' },
+                      { from_currency: 'CAD', to_currency: 'USD', rate: 0.732,   inverse_rate: 1.366,    updated_at: '2026-05-26T08:00:00.000Z' },
+                      { from_currency: 'USD', to_currency: 'NGN', rate: 1590.0,  inverse_rate: 0.000629, updated_at: '2026-05-26T08:00:00.000Z' },
+                    ],
+                    count: 8,
+                    timestamp: '2026-05-26T08:00:00.000Z',
+                  },
+                },
+              },
+            },
+          },
+          401: { $ref: '#/components/responses/Unauthorized' },
+          429: { $ref: '#/components/responses/RateLimited' },
+        },
+      },
+    },
+
+    '/api/rates/convert': {
+      get: {
+        tags: ['Rates'],
+        summary: 'Convert an amount',
+        description: 'Preview exactly how much the recipient will receive for a given send amount. Use this before initiating a transfer or swap.',
+        parameters: [
+          { name: 'amount',        in: 'query', required: true,  schema: { type: 'number', example: 500 },      description: 'Amount to send' },
+          { name: 'from_currency', in: 'query', required: true,  schema: { type: 'string', example: 'CAD' },    description: 'Currency you are sending' },
+          { name: 'to_currency',   in: 'query', required: true,  schema: { type: 'string', example: 'NGN' },    description: 'Currency the recipient receives' },
+        ],
+        responses: {
+          200: {
+            description: 'Conversion breakdown',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    success: { type: 'boolean' },
+                    data: {
+                      type: 'object',
+                      properties: {
+                        from_currency: { type: 'string', example: 'CAD' },
+                        to_currency:   { type: 'string', example: 'NGN' },
+                        from_amount:   { type: 'number', example: 500 },
+                        to_amount:     { type: 'number', example: 633750 },
+                        rate:          { type: 'number', example: 1267.5 },
+                        updated_at:    { type: 'string', format: 'date-time' },
+                      },
+                    },
+                  },
+                },
+                example: {
+                  success: true,
+                  data: {
+                    from_currency: 'CAD', to_currency: 'NGN',
+                    from_amount: 500, to_amount: 633750,
+                    rate: 1267.5, updated_at: '2026-05-26T08:00:00.000Z',
+                  },
+                },
+              },
+            },
+          },
+          400: { description: 'Invalid parameters', content: { 'application/json': { schema: { $ref: '#/components/schemas/ValidationError' } } } },
+          401: { $ref: '#/components/responses/Unauthorized' },
+          429: { $ref: '#/components/responses/RateLimited' },
+        },
+      },
+    },
+
+    '/api/rates/{from_currency}/{to_currency}': {
+      get: {
+        tags: ['Rates'],
+        summary: 'Get rate for a specific pair',
+        parameters: [
+          { name: 'from_currency', in: 'path', required: true, schema: { type: 'string', example: 'CAD' }, description: 'Source currency (3-letter ISO code)' },
+          { name: 'to_currency',   in: 'path', required: true, schema: { type: 'string', example: 'NGN' }, description: 'Target currency (3-letter ISO code)' },
+        ],
+        responses: {
+          200: {
+            description: 'Rate for the requested pair',
+            content: {
+              'application/json': {
+                example: {
+                  success: true,
+                  data: {
+                    from_currency: 'CAD', to_currency: 'NGN',
+                    rate: 1267.5, inverse_rate: 0.000789,
+                    updated_at: '2026-05-26T08:00:00.000Z',
+                    timestamp:  '2026-05-26T08:00:00.000Z',
+                  },
+                },
+              },
+            },
+          },
+          401: { $ref: '#/components/responses/Unauthorized' },
+          404: { $ref: '#/components/responses/NotFound' },
+          429: { $ref: '#/components/responses/RateLimited' },
+        },
+      },
+    },
+
+    // ── TRANSFERS ─────────────────────────────────────────────────
+    '/api/transfers': {
+      post: {
+        tags: ['Transfers'],
+        summary: 'Send money',
+        description: `Initiate a payout to a recipient's bank account.
+
+**Required fields by currency:**
+
+| Currency | Required fields |
+|---|---|
+| 🇳🇬 NGN | \`bank_id\`, \`account_number\`, \`account_name\` |
+| 🇨🇦 CAD | \`recipient_email\` (Interac eTransfer) |
+| 🇺🇸 USD | \`account_number\`, \`bank_name\`, \`routing_number\`, \`email\`, \`account_type\` |
+| 🇬🇧 GBP / 🇪🇺 EUR | Contact support |
+
+> **Tip:** Use \`GET /api/account/banks\` to get the \`bank_id\` for NGN transfers.
+> Use \`POST /api/account/banks/validate\` to verify the account before sending.`,
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['amount', 'currency', 'client_reference'],
+                properties: {
+                  amount:           { type: 'string', example: '50000.00', description: 'Amount as a decimal string' },
+                  currency:         { type: 'string', enum: ['NGN', 'CAD', 'USD', 'GBP', 'EUR'], example: 'NGN' },
+                  client_reference: { type: 'string', example: 'TRF-001', description: 'Your unique reference — used for idempotency and tracking' },
+                  description:      { type: 'string', example: 'Salary payment' },
+                  reference:        { type: 'string', example: 'INV-2026-001' },
+                  // NGN
+                  bank_id:          { type: 'integer', example: 10, description: '🇳🇬 NGN — bank ID from GET /api/account/banks' },
+                  account_number:   { type: 'string', example: '0123456789', description: '🇳🇬 NGN / 🇺🇸 USD' },
+                  account_name:     { type: 'string', example: 'John Doe', description: '🇳🇬 NGN' },
+                  // CAD
+                  recipient_email:  { type: 'string', format: 'email', example: 'jane@example.com', description: '🇨🇦 CAD — Interac eTransfer email' },
+                  // USD
+                  bank_name:        { type: 'string', example: 'Chase Bank', description: '🇺🇸 USD' },
+                  routing_number:   { type: 'string', example: '021000021', description: '🇺🇸 USD — 9-digit routing number' },
+                  email:            { type: 'string', format: 'email', example: 'john@example.com', description: '🇺🇸 USD' },
+                  account_type:     { type: 'string', enum: ['checking', 'savings'], description: '🇺🇸 USD' },
+                },
+              },
+              examples: {
+                NGN: {
+                  summary: '🇳🇬 NGN bank transfer',
+                  value: { currency: 'NGN', amount: '50000.00', bank_id: 10, account_number: '0123456789', account_name: 'John Doe', description: 'Salary payment', client_reference: 'TRF-001' },
+                },
+                CAD: {
+                  summary: '🇨🇦 CAD Interac eTransfer',
+                  value: { currency: 'CAD', amount: '250.00', recipient_email: 'jane@example.com', description: 'Freelance payout', client_reference: 'TRF-002' },
+                },
+                USD: {
+                  summary: '🇺🇸 USD wire transfer',
+                  value: { currency: 'USD', amount: '1000.00', account_number: '123456789', account_name: 'John Doe', bank_name: 'Chase Bank', routing_number: '021000021', email: 'john@example.com', account_type: 'checking', client_reference: 'TRF-003' },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          201: {
+            description: 'Transfer initiated successfully',
+            content: {
+              'application/json': {
+                example: {
+                  success: true,
+                  data: {
+                    transfer: {
+                      transfer_id: '2332', status: 'processing',
+                      amount: '50000.00', currency: 'NGN',
+                      client_reference: 'TRF-001',
+                      recipient: { account_name: 'John Doe', account_number: '0123456789', bank_name: 'ACCESS BANK' },
+                      created_at: '2026-05-26T08:05:00.000Z',
                     },
                   },
                 },
               },
             },
           },
-          401: { description: 'Unauthorized', content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } } },
-        },
-      },
-    },
-    '/api/rates/convert': {
-      get: {
-        tags: ['Exchange Rates'],
-        summary: 'Calculate a conversion',
-        description: 'Calculates how much the recipient receives for a given amount. Use this to preview before sending.',
-        parameters: [
-          { name: 'amount', in: 'query', required: true, schema: { type: 'number', example: 1000 } },
-          { name: 'from_currency', in: 'query', required: true, schema: { type: 'string', example: 'CAD' } },
-          { name: 'to_currency', in: 'query', required: true, schema: { type: 'string', example: 'NGN' } },
-        ],
-        responses: {
-          200: {
-            description: 'Conversion breakdown',
-            content: { 'application/json': { schema: { type: 'object', properties: { success: { type: 'boolean' }, data: { $ref: '#/components/schemas/ConversionResult' } } } } },
-          },
-          400: { description: 'Invalid parameters' },
-        },
-      },
-    },
-    '/api/rates/{from_currency}/{to_currency}': {
-      get: {
-        tags: ['Exchange Rates'],
-        summary: 'Get rate for a currency pair',
-        description: 'Returns the spread-adjusted rate for one specific currency pair.',
-        parameters: [
-          { name: 'from_currency', in: 'path', required: true, schema: { type: 'string', example: 'CAD' } },
-          { name: 'to_currency', in: 'path', required: true, schema: { type: 'string', example: 'NGN' } },
-        ],
-        responses: {
-          200: {
-            description: 'Rate quote',
-            content: { 'application/json': { schema: { type: 'object', properties: { success: { type: 'boolean' }, data: { $ref: '#/components/schemas/RateQuote' } } } } },
-          },
-          404: { description: 'Currency pair not found' },
+          400: { description: 'Validation error — check required fields for the currency', content: { 'application/json': { schema: { $ref: '#/components/schemas/ValidationError' } } } },
+          401: { $ref: '#/components/responses/Unauthorized' },
+          429: { $ref: '#/components/responses/RateLimited' },
         },
       },
     },
 
-    // ── TRANSFERS ────────────────────────────────────────────────────────────
-    '/api/transfers': {
-      post: {
+    '/api/transfers/list': {
+      get: {
         tags: ['Transfers'],
-        summary: 'Initiate a payout',
-        description: `Send funds to a recipient's bank account. Supports NGN (bank transfer), CAD (Interac eTransfer), USD (wire), GBP, and EUR.
-
-**NGN:** Requires \`bank_id\`, \`account_number\`, \`account_name\`.
-**CAD:** Requires \`recipient_email\` (Interac eTransfer).
-**USD:** Requires \`account_number\`, \`bank_name\`, \`routing_number\`, \`email\`, \`account_type\`.`,
-        requestBody: {
-          required: true,
-          content: {
-            'application/json': {
-              examples: {
-                NGN: {
-                  summary: 'NGN bank transfer',
-                  value: { bank_id: 10, account_number: '0123456789', account_name: 'John Doe', amount: '50000.00', currency: 'NGN', description: 'Payout', client_reference: 'TRF-001' },
-                },
-                CAD: {
-                  summary: 'CAD Interac eTransfer',
-                  value: { recipient_email: 'jane@example.com', amount: '250.00', currency: 'CAD', description: 'CAD payout', client_reference: 'TRF-002' },
-                },
-                USD: {
-                  summary: 'USD wire transfer',
-                  value: { account_number: '123456789', account_name: 'John Doe', bank_name: 'Chase', routing_number: '021000021', email: 'john@example.com', account_type: 'checking', amount: '500.00', currency: 'USD', client_reference: 'TRF-003' },
-                },
-              },
-              schema: {
-                type: 'object',
-                required: ['amount', 'currency', 'client_reference'],
-                properties: {
-                  amount: { type: 'string', example: '250.00' },
-                  currency: { type: 'string', enum: ['NGN', 'CAD', 'USD', 'GBP', 'EUR'], example: 'NGN' },
-                  client_reference: { type: 'string', example: 'TRF-001', description: 'Your unique reference (idempotency key)' },
-                  description: { type: 'string', example: 'Payout for services' },
-                  bank_id: { type: 'integer', example: 10, description: 'NGN only — from GET /api/account/banks' },
-                  account_number: { type: 'string', example: '0123456789' },
-                  account_name: { type: 'string', example: 'John Doe' },
-                  recipient_email: { type: 'string', example: 'jane@example.com', description: 'CAD only — Interac eTransfer email' },
-                  bank_name: { type: 'string', description: 'USD only' },
-                  routing_number: { type: 'string', description: 'USD only — 9-digit routing number' },
-                  email: { type: 'string', description: 'USD only' },
-                  account_type: { type: 'string', enum: ['checking', 'savings'], description: 'USD only' },
+        summary: 'List transfers',
+        description: 'Returns a paginated list of all transfers. Filter by currency or status.',
+        parameters: [
+          { name: 'currency', in: 'query', schema: { type: 'string', example: 'NGN' }, description: 'Filter by currency' },
+          { name: 'status',   in: 'query', schema: { type: 'string', enum: ['pending', 'processing', 'completed', 'failed'] }, description: 'Filter by status' },
+          { $ref: '#/components/parameters/PageParam' },
+          { $ref: '#/components/parameters/PageSizeParam' },
+        ],
+        responses: {
+          200: {
+            description: 'Paginated transfer list',
+            content: {
+              'application/json': {
+                example: {
+                  success: true,
+                  data: {
+                    transfers: [
+                      { transfer_id: '2332', status: 'completed', amount: '50000.00', currency: 'NGN', client_reference: 'TRF-001', created_at: '2026-05-26T08:05:00.000Z' },
+                      { transfer_id: '2331', status: 'completed', amount: '250.00',   currency: 'CAD', client_reference: 'TRF-002', created_at: '2026-05-25T14:30:00.000Z' },
+                    ],
+                    pagination: { total: 42, page: 1, page_size: 20, total_pages: 3 },
+                  },
                 },
               },
             },
           },
-        },
-        responses: {
-          201: { description: 'Transfer initiated', content: { 'application/json': { schema: { type: 'object', properties: { data: { type: 'object', properties: { transfer: { $ref: '#/components/schemas/Transfer' } } } } } } } },
-          400: { description: 'Validation error — check required fields for the target currency' },
-          401: { description: 'Invalid or missing API key', content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } } },
-          429: { description: 'Rate limit exceeded (20 transfers/min)', content: { 'application/json': { schema: { $ref: '#/components/schemas/RateLimitError' } } } },
+          401: { $ref: '#/components/responses/Unauthorized' },
         },
       },
     },
-    '/api/transfers/list': {
-      get: {
-        tags: ['Transfers'],
-        summary: 'List all transfers',
-        parameters: [
-          { name: 'currency', in: 'query', schema: { type: 'string', example: 'NGN' } },
-          { name: 'status', in: 'query', schema: { type: 'string', enum: ['processing', 'completed', 'failed'] } },
-          { name: 'page', in: 'query', schema: { type: 'integer', example: 1 } },
-          { name: 'page_size', in: 'query', schema: { type: 'integer', example: 20 } },
-        ],
-        responses: { 200: { description: 'Transfer list' } },
-      },
-    },
+
     '/api/transfers/verification': {
       get: {
         tags: ['Transfers'],
         summary: 'Look up transfer by your reference',
+        description: 'Find a transfer using the `client_reference` you provided when creating it. Useful for checking status without storing our transfer ID.',
         parameters: [
-          { name: 'reference', in: 'query', required: true, schema: { type: 'string', example: 'TRF-001' } },
+          { name: 'reference', in: 'query', required: true, schema: { type: 'string', example: 'TRF-001' }, description: 'The client_reference you provided when creating the transfer' },
         ],
-        responses: { 200: { description: 'Transfer details' }, 404: { description: 'Not found' } },
+        responses: {
+          200: {
+            description: 'Transfer found',
+            content: {
+              'application/json': {
+                example: {
+                  success: true,
+                  data: {
+                    transfer: { transfer_id: '2332', status: 'completed', amount: '50000.00', currency: 'NGN', client_reference: 'TRF-001' },
+                  },
+                },
+              },
+            },
+          },
+          401: { $ref: '#/components/responses/Unauthorized' },
+          404: { $ref: '#/components/responses/NotFound' },
+        },
       },
     },
+
     '/api/transfers/{transfer_id}': {
       get: {
         tags: ['Transfers'],
         summary: 'Get transfer by ID',
         parameters: [
-          { name: 'transfer_id', in: 'path', required: true, schema: { type: 'string', example: '2332' } },
+          { name: 'transfer_id', in: 'path', required: true, schema: { type: 'string', example: '2332' }, description: 'Transfer ID returned when the transfer was created' },
         ],
-        responses: { 200: { description: 'Transfer details' }, 404: { description: 'Not found' } },
+        responses: {
+          200: {
+            description: 'Transfer details',
+            content: {
+              'application/json': {
+                example: {
+                  success: true,
+                  data: {
+                    transfer: {
+                      transfer_id: '2332', status: 'completed',
+                      amount: '50000.00', currency: 'NGN',
+                      client_reference: 'TRF-001', description: 'Salary payment',
+                      recipient: { account_name: 'John Doe', account_number: '0123456789', bank_name: 'ACCESS BANK' },
+                      created_at: '2026-05-26T08:05:00.000Z', updated_at: '2026-05-26T08:07:32.000Z',
+                    },
+                  },
+                },
+              },
+            },
+          },
+          401: { $ref: '#/components/responses/Unauthorized' },
+          404: { $ref: '#/components/responses/NotFound' },
+        },
       },
     },
 
-    // ── SWAPS ────────────────────────────────────────────────────────────────
+    // ── SWAPS ─────────────────────────────────────────────────────
     '/api/swaps': {
       post: {
         tags: ['Swaps'],
         summary: 'Execute a currency swap',
-        description: `Converts funds between two of your wallets at the live market rate.
+        description: `Convert funds from one of your wallets to another at the live rate.
 
-The response includes a settlement breakdown showing the exact amounts exchanged.
-Use \`GET /api/rates/convert\` first to preview before executing.`,
+Use \`GET /api/wallets\` to find your wallet IDs, and \`GET /api/rates/convert\` to preview the amount before executing.`,
         requestBody: {
           required: true,
           content: {
@@ -332,21 +589,24 @@ Use \`GET /api/rates/convert\` first to preview before executing.`,
                 type: 'object',
                 required: ['from_wallet_id', 'to_wallet_id', 'amount', 'from_currency', 'to_currency'],
                 properties: {
-                  from_wallet_id: { type: 'string', example: '2746' },
-                  to_wallet_id: { type: 'string', example: '2748' },
-                  amount: { type: 'string', example: '1000.00' },
-                  from_currency: { type: 'string', example: 'CAD' },
-                  to_currency: { type: 'string', example: 'NGN' },
-                  lock_rate: { type: 'boolean', default: false },
-                  reference: { type: 'string', example: 'SWAP-001' },
+                  from_wallet_id: { type: 'string', example: '2746', description: 'Wallet to debit — use GET /api/wallets to find IDs' },
+                  to_wallet_id:   { type: 'string', example: '2748', description: 'Wallet to credit' },
+                  amount:         { type: 'string', example: '1000.00', description: 'Amount to convert (in from_currency)' },
+                  from_currency:  { type: 'string', example: 'CAD' },
+                  to_currency:    { type: 'string', example: 'NGN' },
+                  lock_rate:      { type: 'boolean', default: false, description: 'Lock the rate at quote time' },
+                  reference:      { type: 'string', example: 'SWAP-001' },
                 },
+              },
+              example: {
+                from_wallet_id: '2746', to_wallet_id: '2748',
+                amount: '1000.00', from_currency: 'CAD', to_currency: 'NGN',
+                reference: 'SWAP-001',
               },
             },
           },
         },
         responses: {
-          401: { description: 'Invalid or missing API key', content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } } },
-          429: { description: 'Rate limit exceeded (20 swaps/min)', content: { 'application/json': { schema: { $ref: '#/components/schemas/RateLimitError' } } } },
           201: {
             description: 'Swap executed',
             content: {
@@ -354,158 +614,258 @@ Use \`GET /api/rates/convert\` first to preview before executing.`,
                 example: {
                   success: true,
                   data: {
-                    swap: {},
+                    swap: { swap_id: '881', status: 'completed' },
                     settlement: {
-                      from_amount:   1000,
-                      from_currency: 'CAD',
-                      to_amount:     1267500,
-                      to_currency:   'NGN',
-                      rate:          1267.5,
+                      from_amount: 1000, from_currency: 'CAD',
+                      to_amount: 1267500, to_currency: 'NGN',
+                      rate: 1267.5,
                     },
                   },
                 },
               },
             },
           },
+          400: { description: 'Validation error', content: { 'application/json': { schema: { $ref: '#/components/schemas/ValidationError' } } } },
+          401: { $ref: '#/components/responses/Unauthorized' },
+          429: { $ref: '#/components/responses/RateLimited' },
         },
       },
     },
+
     '/api/swaps/list': {
       get: {
         tags: ['Swaps'],
-        summary: 'List all swaps',
+        summary: 'List swaps',
         parameters: [
-          { name: 'currency', in: 'query', schema: { type: 'string' } },
-          { name: 'page', in: 'query', schema: { type: 'integer' } },
+          { name: 'currency', in: 'query', schema: { type: 'string', example: 'CAD' }, description: 'Filter by source currency' },
+          { $ref: '#/components/parameters/PageParam' },
+          { $ref: '#/components/parameters/PageSizeParam' },
         ],
-        responses: { 200: { description: 'Swap history' } },
+        responses: {
+          200: {
+            description: 'Paginated swap list',
+            content: {
+              'application/json': {
+                example: {
+                  success: true,
+                  data: {
+                    swaps: [
+                      { swap_id: '881', status: 'completed', from_currency: 'CAD', to_currency: 'NGN', from_amount: '1000.00', to_amount: '1267500.00', rate: 1267.5, created_at: '2026-05-26T08:00:00.000Z' },
+                    ],
+                    pagination: { total: 5, page: 1, page_size: 20, total_pages: 1 },
+                  },
+                },
+              },
+            },
+          },
+          401: { $ref: '#/components/responses/Unauthorized' },
+        },
       },
     },
+
     '/api/swaps/{swap_id}': {
       get: {
         tags: ['Swaps'],
         summary: 'Get swap by ID',
-        parameters: [{ name: 'swap_id', in: 'path', required: true, schema: { type: 'string' } }],
-        responses: { 200: { description: 'Swap details' } },
+        parameters: [
+          { name: 'swap_id', in: 'path', required: true, schema: { type: 'string', example: '881' }, description: 'Swap ID returned when the swap was created' },
+        ],
+        responses: {
+          200: {
+            description: 'Swap details',
+            content: {
+              'application/json': {
+                example: {
+                  success: true,
+                  data: {
+                    swap: { swap_id: '881', status: 'completed', from_currency: 'CAD', to_currency: 'NGN', from_amount: '1000.00', to_amount: '1267500.00', rate: 1267.5, reference: 'SWAP-001', created_at: '2026-05-26T08:00:00.000Z' },
+                  },
+                },
+              },
+            },
+          },
+          401: { $ref: '#/components/responses/Unauthorized' },
+          404: { $ref: '#/components/responses/NotFound' },
+        },
       },
     },
 
-    // ── WALLETS ──────────────────────────────────────────────────────────────
+    // ── WALLETS ───────────────────────────────────────────────────
     '/api/wallets': {
       get: {
         tags: ['Wallets'],
         summary: 'List all wallets',
-        description: 'Returns all active wallets with full balance, pending, and ledger information.',
-        responses: { 200: { description: 'Wallet list' } },
-      },
-    },
-    '/api/wallets/balances': {
-      get: {
-        tags: ['Wallets'],
-        summary: 'Quick balance summary',
-        description: 'Returns available, pending, and total balance for every currency in one call.',
+        description: 'Returns all your active currency wallets with balances.',
         responses: {
           200: {
-            description: 'All balances',
+            description: 'Wallet list',
             content: {
               'application/json': {
                 example: {
+                  success: true,
                   data: {
-                    balances: [
-                      { currency: 'CAD', balance: '4749.10', available: '4749.10', pending: '0.00' },
-                      { currency: 'NGN', balance: '450000.00', available: '450000.00', pending: '0.00' },
+                    wallets: [
+                      { wallet_id: '2746', currency: 'CAD', balance: '4749.10', available: '4749.10', pending: '0.00', status: 'active' },
+                      { wallet_id: '2747', currency: 'USD', balance: '2100.00', available: '2100.00', pending: '0.00', status: 'active' },
+                      { wallet_id: '2748', currency: 'NGN', balance: '4500000.00', available: '4500000.00', pending: '0.00', status: 'active' },
                     ],
                   },
                 },
               },
             },
           },
+          401: { $ref: '#/components/responses/Unauthorized' },
         },
       },
     },
-    '/api/wallets/{currency}': {
-      get: {
-        tags: ['Wallets'],
-        summary: 'Get wallet by currency',
-        parameters: [{ name: 'currency', in: 'path', required: true, schema: { type: 'string', example: 'CAD' } }],
-        responses: { 200: { description: 'Wallet detail' }, 404: { description: 'Wallet not found' } },
-      },
-    },
-    '/api/wallets/{currency}/transactions': {
-      get: {
-        tags: ['Wallets'],
-        summary: 'Wallet transaction history',
-        parameters: [
-          { name: 'currency', in: 'path', required: true, schema: { type: 'string', example: 'CAD' } },
-          { name: 'page', in: 'query', schema: { type: 'integer' } },
-          { name: 'page_size', in: 'query', schema: { type: 'integer' } },
-        ],
-        responses: { 200: { description: 'Transaction list' } },
-      },
-    },
 
-    // ── ACCOUNT ──────────────────────────────────────────────────────────────
-    '/api/account': {
+    '/api/wallets/balances': {
       get: {
-        tags: ['Account'],
-        summary: 'Get account details',
-        description: 'Returns your company account info, KYB status, and all linked bank accounts.',
-        responses: { 200: { description: 'Account details' } },
-      },
-      patch: {
-        tags: ['Account'],
-        summary: 'Update account settings',
-        description: 'Update contact info or webhook URL. Only fields provided will be changed.',
-        requestBody: {
-          content: {
-            'application/json': {
-              schema: {
-                type: 'object',
-                properties: {
-                  contact_email: { type: 'string', format: 'email' },
-                  contact_phone: { type: 'string', example: '+14165559999' },
-                  webhook_url: { type: 'string', format: 'uri', example: 'https://api.zeehfi.ca/webhooks/receive' },
-                  metadata: { type: 'object' },
+        tags: ['Wallets'],
+        summary: 'Quick balance summary',
+        description: 'Returns available, pending, and total balance for all currencies in a single lightweight call.',
+        responses: {
+          200: {
+            description: 'All balances',
+            content: {
+              'application/json': {
+                example: {
+                  success: true,
+                  data: {
+                    balances: [
+                      { currency: 'CAD', balance: '4749.10', available: '4749.10', pending: '0.00' },
+                      { currency: 'USD', balance: '2100.00', available: '2100.00', pending: '0.00' },
+                      { currency: 'NGN', balance: '4500000.00', available: '4500000.00', pending: '0.00' },
+                    ],
+                  },
                 },
               },
             },
           },
+          401: { $ref: '#/components/responses/Unauthorized' },
         },
-        responses: { 200: { description: 'Updated fields confirmed' } },
       },
     },
+
+    '/api/wallets/{currency}': {
+      get: {
+        tags: ['Wallets'],
+        summary: 'Get wallet by currency',
+        parameters: [
+          { name: 'currency', in: 'path', required: true, schema: { type: 'string', example: 'CAD' }, description: '3-letter currency code' },
+        ],
+        responses: {
+          200: {
+            description: 'Wallet details',
+            content: {
+              'application/json': {
+                example: {
+                  success: true,
+                  data: {
+                    wallet: { wallet_id: '2746', currency: 'CAD', balance: '4749.10', available: '4749.10', pending: '0.00', status: 'active' },
+                  },
+                },
+              },
+            },
+          },
+          401: { $ref: '#/components/responses/Unauthorized' },
+          404: { $ref: '#/components/responses/NotFound' },
+        },
+      },
+    },
+
+    '/api/wallets/{currency}/transactions': {
+      get: {
+        tags: ['Wallets'],
+        summary: 'Wallet transaction history',
+        description: 'All credits and debits for a specific currency wallet.',
+        parameters: [
+          { name: 'currency', in: 'path', required: true, schema: { type: 'string', example: 'CAD' }, description: '3-letter currency code' },
+          { $ref: '#/components/parameters/PageParam' },
+          { $ref: '#/components/parameters/PageSizeParam' },
+        ],
+        responses: {
+          200: {
+            description: 'Transaction history',
+            content: {
+              'application/json': {
+                example: {
+                  success: true,
+                  data: {
+                    transactions: [
+                      { id: 'txn_001', type: 'debit',  amount: '1000.00', currency: 'CAD', description: 'Swap to NGN',       balance_after: '3749.10', created_at: '2026-05-26T08:00:00.000Z' },
+                      { id: 'txn_002', type: 'credit', amount: '5000.00', currency: 'CAD', description: 'Wallet funding',   balance_after: '4749.10', created_at: '2026-05-25T10:00:00.000Z' },
+                    ],
+                    pagination: { total: 24, page: 1, page_size: 20, total_pages: 2 },
+                  },
+                },
+              },
+            },
+          },
+          401: { $ref: '#/components/responses/Unauthorized' },
+          404: { $ref: '#/components/responses/NotFound' },
+        },
+      },
+    },
+
+    // ── BANKS ─────────────────────────────────────────────────────
     '/api/account/banks': {
       get: {
-        tags: ['Account'],
-        summary: 'List available banks',
-        description: 'Get bank codes and names for a given currency. Use `bank_id` from this list when initiating NGN transfers.',
+        tags: ['Banks'],
+        summary: 'List supported banks',
+        description: 'Returns all supported banks for a given currency. Use the `id` field as `bank_id` when initiating NGN transfers.',
         parameters: [
-          { name: 'currency', in: 'query', required: true, schema: { type: 'string', enum: ['NGN', 'CAD', 'USD', 'GBP', 'EUR'], example: 'NGN' } },
+          { name: 'currency', in: 'query', required: true, schema: { type: 'string', enum: ['NGN', 'CAD', 'USD', 'GBP', 'EUR'], example: 'NGN' }, description: 'Currency to list banks for' },
         ],
-        responses: { 200: { description: 'Bank list with codes' } },
+        responses: {
+          200: {
+            description: 'List of banks',
+            content: {
+              'application/json': {
+                example: {
+                  success: true,
+                  data: {
+                    banks: [
+                      { id: 10,  name: 'ACCESS BANK',             code: '044', currency: 'NGN' },
+                      { id: 20,  name: 'FIRST BANK OF NIGERIA',   code: '011', currency: 'NGN' },
+                      { id: 30,  name: 'GUARANTY TRUST BANK',     code: '058', currency: 'NGN' },
+                      { id: 40,  name: 'UNITED BANK FOR AFRICA',  code: '033', currency: 'NGN' },
+                      { id: 50,  name: 'ZENITH BANK',             code: '057', currency: 'NGN' },
+                    ],
+                  },
+                },
+              },
+            },
+          },
+          400: { description: 'Missing or invalid currency', content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } } },
+          401: { $ref: '#/components/responses/Unauthorized' },
+        },
       },
     },
+
     '/api/account/banks/validate': {
       post: {
-        tags: ['Account'],
+        tags: ['Banks'],
         summary: 'Validate a bank account',
-        description: 'Verify an account number before sending. Returns the account holder name if valid.',
+        description: `Verify an account number before sending money. Returns the registered account holder name if valid.
+
+> **Best practice:** Always validate before initiating a transfer to avoid failed payments.`,
         requestBody: {
           required: true,
           content: {
             'application/json': {
-              examples: {
-                NGN: { summary: 'NGN account', value: { currency: 'NGN', bank_code: '10', account_number: '0123456789' } },
-                CAD: { summary: 'CAD eTransfer', value: { currency: 'CAD', account_number: 'recipient@example.com' } },
-              },
               schema: {
                 type: 'object',
                 required: ['currency', 'account_number'],
                 properties: {
-                  currency: { type: 'string', example: 'NGN' },
-                  bank_code: { type: 'string', example: '10', description: 'Required for NGN only' },
+                  currency:       { type: 'string', enum: ['NGN', 'CAD', 'USD'], example: 'NGN' },
+                  bank_code:      { type: 'string', example: '044', description: '🇳🇬 NGN only — bank code from GET /api/account/banks' },
                   account_number: { type: 'string', example: '0123456789' },
                 },
+              },
+              examples: {
+                NGN: { summary: '🇳🇬 NGN bank account', value: { currency: 'NGN', bank_code: '044', account_number: '0123456789' } },
+                CAD: { summary: '🇨🇦 CAD Interac email', value: { currency: 'CAD', account_number: 'jane@example.com' } },
               },
             },
           },
@@ -515,39 +875,124 @@ Use \`GET /api/rates/convert\` first to preview before executing.`,
             description: 'Account is valid',
             content: {
               'application/json': {
-                example: { data: { valid: true, account_name: 'okey Joy Chidimma', account_number: '0123456789', bank: { id: 10, name: 'ACCESS BANK' } } },
+                example: {
+                  success: true,
+                  data: {
+                    valid: true,
+                    account_name:   'JOHN DOE',
+                    account_number: '0123456789',
+                    bank: { id: 10, name: 'ACCESS BANK', code: '044' },
+                  },
+                },
               },
             },
           },
+          400: { description: 'Invalid account number or bank code', content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } } },
+          401: { $ref: '#/components/responses/Unauthorized' },
         },
       },
     },
+
+    // ── ACCOUNT ───────────────────────────────────────────────────
+    '/api/account': {
+      get: {
+        tags: ['Account'],
+        summary: 'Get account details',
+        description: 'Returns your company profile, KYB verification status, and settings.',
+        responses: {
+          200: {
+            description: 'Account details',
+            content: {
+              'application/json': {
+                example: {
+                  success: true,
+                  data: {
+                    account: {
+                      account_id:     'acc_001',
+                      company_name:   'Zeeh Africa',
+                      email:          'zeehafricah@gmail.com',
+                      kyb_status:     'approved',
+                      webhook_url:    'https://api.zeehfi.ca/webhooks/receive',
+                      created_at:     '2026-01-01T00:00:00.000Z',
+                    },
+                  },
+                },
+              },
+            },
+          },
+          401: { $ref: '#/components/responses/Unauthorized' },
+        },
+      },
+      patch: {
+        tags: ['Account'],
+        summary: 'Update account settings',
+        description: 'Update your webhook URL or contact information. Only fields you provide will be changed.',
+        requestBody: {
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                properties: {
+                  contact_email: { type: 'string', format: 'email', example: 'payments@yourcompany.com' },
+                  contact_phone: { type: 'string', example: '+14165559999' },
+                  webhook_url:   { type: 'string', format: 'uri', example: 'https://yourapp.com/webhooks/zeeh' },
+                },
+              },
+              example: { webhook_url: 'https://yourapp.com/webhooks/zeeh' },
+            },
+          },
+        },
+        responses: {
+          200: {
+            description: 'Account updated',
+            content: { 'application/json': { example: { success: true, message: 'Account updated successfully' } } },
+          },
+          401: { $ref: '#/components/responses/Unauthorized' },
+        },
+      },
+    },
+
     '/api/account/transactions': {
       get: {
         tags: ['Account'],
         summary: 'Full transaction history',
-        description: 'Unified view of all transfers, swaps, and wallet funding across all currencies.',
+        description: 'Unified view of all transfers, swaps, and wallet funding across all currencies and wallets.',
         parameters: [
-          { name: 'currency', in: 'query', schema: { type: 'string' } },
-          { name: 'type', in: 'query', schema: { type: 'string', enum: ['transfer', 'swap', 'wallet_funding', 'all'] } },
-          { name: 'status', in: 'query', schema: { type: 'string', enum: ['pending', 'processing', 'completed', 'failed'] } },
-          { name: 'page', in: 'query', schema: { type: 'integer' } },
-          { name: 'page_size', in: 'query', schema: { type: 'integer', example: 20 } },
+          { name: 'currency', in: 'query', schema: { type: 'string', example: 'NGN' }, description: 'Filter by currency' },
+          { name: 'type',     in: 'query', schema: { type: 'string', enum: ['transfer', 'swap', 'wallet_funding'] }, description: 'Filter by transaction type' },
+          { name: 'status',   in: 'query', schema: { type: 'string', enum: ['pending', 'processing', 'completed', 'failed'] } },
+          { $ref: '#/components/parameters/PageParam' },
+          { $ref: '#/components/parameters/PageSizeParam' },
         ],
-        responses: { 200: { description: 'Transaction history with pagination' } },
+        responses: {
+          200: {
+            description: 'Transaction history',
+            content: {
+              'application/json': {
+                example: {
+                  success: true,
+                  data: {
+                    transactions: [
+                      { id: 'txn_201', type: 'transfer', status: 'completed', amount: '50000.00', currency: 'NGN', description: 'Salary payment', created_at: '2026-05-26T08:05:00.000Z' },
+                      { id: 'txn_200', type: 'swap',     status: 'completed', amount: '1000.00',  currency: 'CAD', description: 'CAD → NGN swap', created_at: '2026-05-26T08:00:00.000Z' },
+                    ],
+                    pagination: { total: 87, page: 1, page_size: 20, total_pages: 5 },
+                  },
+                },
+              },
+            },
+          },
+          401: { $ref: '#/components/responses/Unauthorized' },
+        },
       },
     },
 
-    // ── WEBHOOKS ─────────────────────────────────────────────────────────────
+    // ── WEBHOOKS ──────────────────────────────────────────────────
     '/api/webhooks': {
       post: {
         tags: ['Webhooks'],
         summary: 'Register webhook URL',
-        description: `Set the URL that GTP will call when payment events occur (transfer completed, swap completed, etc.).
-
-> **Tip:** Use \`PATCH /api/account\` with \`webhook_url\` as an alternative — both set the same value.
-
-Your webhook receiver is already live at \`https://api.zeehfi.ca/webhooks/receive\` and is pre-registered.`,
+        description: 'Set the URL that will receive payment event notifications. Use `PATCH /api/account` as an alternative.',
         requestBody: {
           required: true,
           content: {
@@ -556,45 +1001,65 @@ Your webhook receiver is already live at \`https://api.zeehfi.ca/webhooks/receiv
                 type: 'object',
                 required: ['url'],
                 properties: {
-                  url: { type: 'string', format: 'uri', example: 'https://api.zeehfi.ca/webhooks/receive' },
-                  description: { type: 'string', example: 'Production payment notifications' },
+                  url:         { type: 'string', format: 'uri', example: 'https://yourapp.com/webhooks/zeeh' },
+                  description: { type: 'string', example: 'Production webhook' },
                 },
               },
             },
           },
         },
-        responses: { 201: { description: 'Webhook registered' }, 400: { description: 'Invalid URL' } },
+        responses: {
+          201: { description: 'Webhook registered', content: { 'application/json': { example: { success: true, message: 'Webhook registered' } } } },
+          400: { description: 'Invalid URL' },
+          401: { $ref: '#/components/responses/Unauthorized' },
+        },
       },
     },
+
     '/webhooks/receive': {
       post: {
         tags: ['Webhooks'],
-        summary: 'Webhook event receiver (GTP → you)',
-        description: `GTP calls this endpoint automatically when a payment event occurs. **No API key required** — this is a public inbound endpoint.
+        summary: 'Webhook receiver',
+        security: [],
+        description: `This endpoint receives real-time event notifications. **No API key required.**
+
+Respond with **HTTP 200** within 10 seconds — failed deliveries are retried automatically.
 
 **Event types:**
-| Type | Description |
-|---|---|
-| \`transfer.completed\` | Payout successfully delivered |
-| \`transfer.failed\` | Payout failed |
-| \`swap.completed\` | Currency swap completed |
-| \`wallet.funded\` | Wallet received a deposit |
 
-Respond with **HTTP 200** within 10 seconds — GTP will retry on failure.`,
-        security: [],
+| Event | Description |
+|---|---|
+| \`transfer.completed\` | Payout delivered to recipient |
+| \`transfer.failed\`    | Payout failed |
+| \`swap.completed\`     | Currency swap completed |
+| \`wallet.funded\`      | Wallet received a deposit |`,
         requestBody: {
           content: {
             'application/json': {
-              example: {
-                event: 'transfer.completed',
-                data: {
-                  transfer_id: '2333',
-                  status: 'completed',
-                  amount: '10000.00',
-                  currency: 'NGN',
-                  client_reference: 'TRF-WEBHOOK-TEST-001',
-                  recipient: { bank_name: 'ACCESS BANK', account_number: '0123456789', account_name: 'okey Joy Chidimma' },
-                  completed_at: '2026-05-26T05:20:00.000Z',
+              examples: {
+                transfer_completed: {
+                  summary: 'transfer.completed',
+                  value: {
+                    event: 'transfer.completed',
+                    data: {
+                      transfer_id: '2332', status: 'completed',
+                      amount: '50000.00', currency: 'NGN',
+                      client_reference: 'TRF-001',
+                      recipient: { bank_name: 'ACCESS BANK', account_number: '0123456789', account_name: 'JOHN DOE' },
+                      completed_at: '2026-05-26T08:07:32.000Z',
+                    },
+                  },
+                },
+                swap_completed: {
+                  summary: 'swap.completed',
+                  value: {
+                    event: 'swap.completed',
+                    data: {
+                      swap_id: '881', status: 'completed',
+                      from_currency: 'CAD', to_currency: 'NGN',
+                      from_amount: '1000.00', to_amount: '1267500.00',
+                    },
+                  },
                 },
               },
             },
