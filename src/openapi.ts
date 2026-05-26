@@ -5,34 +5,76 @@ export const openapiSpec = {
     version: '1.0.0',
     description: `
 ## Overview
-Zeeh Africa is a cross-border payment service built on top of the GTP/Expedier network.
+**Zeeh Africa** is a cross-border payment API enabling fast, affordable money movement between Canada, Nigeria, the US, UK, and Europe — built on the GTP/Expedier payment network.
 
-Every exchange rate returned by this API already includes our **spread** (markup).
-The spread is your company's revenue on every conversion — the difference between
-the interbank rate GTP provides and the rate shown to your customer.
+---
 
-### How the spread works
+## Quick Start
+
+1. **Get your API key** — contact us at zeehafricah@gmail.com
+2. **Add the header** to every request:
+\`\`\`
+x-api-key: YOUR_API_KEY
+\`\`\`
+3. **Check live rates** → \`GET /api/rates\`
+4. **Send a payment** → \`POST /api/transfers\`
+
+---
+
+## How Rates Work
+
+Every exchange rate already includes our **spread** (markup). This is transparent — you can always see the exact spread applied.
+
 \`\`\`
 customer_rate = raw_rate × (1 − spread_pct / 100)
 
 Example — CAD → NGN:
-  Raw rate (GTP):    1,300 NGN per CAD
-  Spread:            2.5 %
-  Customer rate:     1,267.5 NGN per CAD
-  Your margin:       32.50 NGN per CAD sent
+  Interbank rate:    1,300 NGN / CAD
+  Spread:            2.5%
+  Customer rate:     1,267.50 NGN / CAD
+  Your savings vs wire transfer: significantly better than banks
 \`\`\`
 
-### Authentication
-All endpoints (except \`/health\` and \`/webhooks/receive\`) require your service API key
-in the **\`x-api-key\`** header.
+Use \`GET /api/rates/convert\` to get a full breakdown before initiating any payment.
 
-### Supported currencies
-CAD · NGN · USD · GBP · EUR
+---
+
+## Authentication
+
+All endpoints require your API key in the **\`x-api-key\`** header.
+
+**Public endpoints (no key needed):**
+- \`GET /health\`
+- \`POST /webhooks/receive\` ← GTP calls this; do not call it yourself
+
+---
+
+## Rate Limits
+
+| Endpoint group | Limit |
+|---|---|
+| Global (all endpoints) | 120 requests / minute |
+| Transfers & Swaps | 20 requests / minute |
+| Rate quotes | 300 requests / minute |
+
+Exceeding the limit returns **HTTP 429**. Wait 60 seconds and retry.
+
+---
+
+## Supported Currencies
+
+| Currency | Send | Receive | Method |
+|---|---|---|---|
+| 🇨🇦 CAD | ✅ | ✅ | Interac eTransfer |
+| 🇳🇬 NGN | ✅ | ✅ | Bank transfer |
+| 🇺🇸 USD | ✅ | ✅ | Wire transfer |
+| 🇬🇧 GBP | ✅ | ✅ | Bank transfer |
+| 🇪🇺 EUR | ✅ | ✅ | Bank transfer |
     `,
     contact: {
       name: 'Zeeh Africa Support',
-      email: 'david@zeeh.africa',
-      url: 'https://zeeh.africa',
+      email: 'zeehafricah@gmail.com',
+      url: 'https://zeehfi.ca',
     },
   },
   servers: [
@@ -46,7 +88,7 @@ CAD · NGN · USD · GBP · EUR
         type: 'apiKey',
         in: 'header',
         name: 'x-api-key',
-        description: 'Your Zeeh Africa service API key',
+        description: 'Your Zeeh Africa API key. Contact zeehafricah@gmail.com to get one.',
       },
     },
     schemas: {
@@ -55,6 +97,13 @@ CAD · NGN · USD · GBP · EUR
         properties: {
           success: { type: 'boolean', example: false },
           message: { type: 'string', example: 'Invalid or missing API key' },
+        },
+      },
+      RateLimitError: {
+        type: 'object',
+        properties: {
+          success: { type: 'boolean', example: false },
+          message: { type: 'string', example: 'Too many requests, please try again in 60 seconds.' },
         },
       },
       RateQuote: {
@@ -270,8 +319,9 @@ CAD · NGN · USD · GBP · EUR
         },
         responses: {
           201: { description: 'Transfer initiated', content: { 'application/json': { schema: { type: 'object', properties: { data: { type: 'object', properties: { transfer: { $ref: '#/components/schemas/Transfer' } } } } } } } },
-          400: { description: 'Validation error' },
-          401: { description: 'Unauthorized' },
+          400: { description: 'Validation error — check required fields for the target currency' },
+          401: { description: 'Invalid or missing API key', content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } } },
+          429: { description: 'Rate limit exceeded (20 transfers/min)', content: { 'application/json': { schema: { $ref: '#/components/schemas/RateLimitError' } } } },
         },
       },
     },
@@ -314,7 +364,14 @@ CAD · NGN · USD · GBP · EUR
       post: {
         tags: ['Swaps'],
         summary: 'Execute a currency swap',
-        description: 'Converts funds between two wallets. The spread is applied and your margin is returned in `settlement.spread_revenue`.',
+        description: `Converts funds between two of your wallets at the spread-adjusted rate.
+
+The response includes a **settlement breakdown** showing exactly how much the customer receives and your margin:
+- \`settlement.to_amount\` — what the customer gets
+- \`settlement.spread_revenue\` — your revenue on this swap
+- \`settlement.customer_rate\` — the rate shown to the customer
+
+Use \`GET /api/rates/convert\` first to preview the conversion before executing.`,
         requestBody: {
           required: true,
           content: {
@@ -336,6 +393,8 @@ CAD · NGN · USD · GBP · EUR
           },
         },
         responses: {
+          401: { description: 'Invalid or missing API key', content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } } },
+          429: { description: 'Rate limit exceeded (20 swaps/min)', content: { 'application/json': { schema: { $ref: '#/components/schemas/RateLimitError' } } } },
           201: {
             description: 'Swap executed with settlement breakdown',
             content: {
@@ -534,7 +593,11 @@ CAD · NGN · USD · GBP · EUR
       post: {
         tags: ['Webhooks'],
         summary: 'Register webhook URL',
-        description: 'Set or update the URL that receives payment event notifications. If one already exists it will be replaced.',
+        description: `Set the URL that GTP will call when payment events occur (transfer completed, swap completed, etc.).
+
+> **Tip:** Use \`PATCH /api/account\` with \`webhook_url\` as an alternative — both set the same value.
+
+Your webhook receiver is already live at \`https://api.zeehfi.ca/webhooks/receive\` and is pre-registered.`,
         requestBody: {
           required: true,
           content: {
