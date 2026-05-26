@@ -36,8 +36,8 @@ CAD · NGN · USD · GBP · EUR
     },
   },
   servers: [
+    { url: 'https://api.zeehfi.ca', description: 'Production' },
     { url: 'http://localhost:3000', description: 'Local development' },
-    { url: 'https://your-domain.com', description: 'Production' },
   ],
   security: [{ ApiKeyAuth: [] }],
   components: {
@@ -455,7 +455,7 @@ CAD · NGN · USD · GBP · EUR
                 properties: {
                   contact_email: { type: 'string', format: 'email' },
                   contact_phone: { type: 'string', example: '+14165559999' },
-                  webhook_url: { type: 'string', format: 'uri', example: 'https://your-domain.com/webhooks/receive' },
+                  webhook_url: { type: 'string', format: 'uri', example: 'https://api.zeehfi.ca/webhooks/receive' },
                   metadata: { type: 'object' },
                 },
               },
@@ -543,7 +543,7 @@ CAD · NGN · USD · GBP · EUR
                 type: 'object',
                 required: ['url'],
                 properties: {
-                  url: { type: 'string', format: 'uri', example: 'https://your-domain.com/webhooks/receive' },
+                  url: { type: 'string', format: 'uri', example: 'https://api.zeehfi.ca/webhooks/receive' },
                   description: { type: 'string', example: 'Production payment notifications' },
                 },
               },
