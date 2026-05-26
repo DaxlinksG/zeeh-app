@@ -15,6 +15,7 @@ import accountRouter from './routes/account';
 import webhooksRouter from './routes/webhooks';
 import adminRouter from './routes/admin';
 import balanceRouter from './routes/balance';
+import { createPendingDeposit } from './lib/deposits';
 
 const app = express();
 
@@ -151,25 +152,44 @@ app.use('/docs', swaggerUi.serve, swaggerUi.setup(openapiSpec, {
 }));
 
 // Webhook receiver — GTP calls this, no API key needed
-app.post('/webhooks/receive', (req, res) => {
-  const event = req.body as Record<string, unknown>;
-  const eventType = event.type ?? event.event ?? 'unknown';
-  const ts = new Date().toISOString();
+app.post('/webhooks/receive', async (req, res) => {
+  const event     = req.body as Record<string, unknown>;
+  const eventType = String(event.type ?? event.event ?? 'unknown');
+  const ts        = new Date().toISOString();
+
+  // ── Structured console log ────────────────────────────────────────────────
+  const data     = event.data as Record<string, unknown> | undefined;
+  const status   = data?.status   ?? event.status;
+  const amount   = String(data?.amount   ?? event.amount   ?? '');
+  const currency = String(data?.currency ?? event.currency ?? '');
+  const ref      = String(data?.reference ?? data?.client_reference ?? data?.transfer_id ?? data?.swap_id ?? data?.wallet_id ?? event.reference ?? '');
+
   console.log(`\n${'─'.repeat(60)}`);
   console.log(`📨  WEBHOOK EVENT  [${ts}]`);
   console.log(`   Type   : ${eventType}`);
-  const data = event.data as Record<string, unknown> | undefined;
-  if (data) {
-    const status   = data.status   ?? event.status;
-    const amount   = data.amount   ?? event.amount;
-    const currency = data.currency ?? event.currency;
-    const ref      = data.reference ?? data.client_reference ?? data.transfer_id ?? data.swap_id;
-    if (amount)   console.log(`   Amount : ${currency ?? ''} ${amount}`);
-    if (status)   console.log(`   Status : ${status}`);
-    if (ref)      console.log(`   Ref    : ${ref}`);
-  }
+  if (amount)   console.log(`   Amount : ${currency} ${amount}`);
+  if (status)   console.log(`   Status : ${status}`);
+  if (ref)      console.log(`   Ref    : ${ref}`);
   console.log(JSON.stringify(event, null, 2));
   console.log(`${'─'.repeat(60)}\n`);
+
+  // ── Auto-detect deposits: wallet.funded ───────────────────────────────────
+  // When any wallet receives funds, GTP fires wallet.funded.
+  // We can't know which client sent the money, so we create a pending deposit
+  // record that an admin can assign to the correct client with one click.
+  if (
+    (eventType === 'wallet.funded' || eventType === 'wallet_funded') &&
+    amount && parseFloat(amount) > 0 && currency
+  ) {
+    try {
+      const deposit = await createPendingDeposit(eventType, currency, amount, ref || ts, event);
+      console.log(`💰  Pending deposit created: ${deposit.deposit_id}  (${currency} ${amount})`);
+    } catch (err) {
+      console.error('⚠️  Failed to create pending deposit:', err);
+      // Still return 200 so GTP doesn't retry indefinitely
+    }
+  }
+
   res.status(200).json({ received: true });
 });
 

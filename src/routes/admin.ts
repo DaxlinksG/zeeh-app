@@ -2,6 +2,7 @@ import { Router, Request, Response, NextFunction } from 'express';
 import { z } from 'zod';
 import { createApiKey, listApiKeys, revokeApiKey } from '../lib/keyStore';
 import { creditBalance, getAllBalances, getTransactions } from '../lib/ledger';
+import { listPendingDeposits, assignDeposit, ignoreDeposit } from '../lib/deposits';
 
 const router = Router();
 
@@ -125,6 +126,73 @@ router.get('/ledger/:key_id/transactions', async (req: Request, res: Response, n
     const txns  = await getTransactions(req.params.key_id, limit);
     res.json({ success: true, data: { transactions: txns, count: txns.length } });
   } catch (err) {
+    next(err);
+  }
+});
+
+// ── Pending Deposits ──────────────────────────────────────────────────────
+
+// GET /admin/deposits/pending  — list unassigned deposits
+router.get('/deposits/pending', async (_req: Request, res: Response, next: NextFunction) => {
+  try {
+    const deposits = await listPendingDeposits('unassigned');
+    res.json({ success: true, data: { deposits, count: deposits.length } });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// GET /admin/deposits/all  — list all deposits regardless of status
+router.get('/deposits/all', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const status = (req.query.status as string) ?? 'unassigned';
+    const validStatuses = ['unassigned', 'assigned', 'ignored'] as const;
+    type DS = typeof validStatuses[number];
+    const s: DS = validStatuses.includes(status as DS) ? (status as DS) : 'unassigned';
+    const deposits = await listPendingDeposits(s);
+    res.json({ success: true, data: { deposits, count: deposits.length } });
+  } catch (err) {
+    next(err);
+  }
+});
+
+const assignSchema = z.object({
+  key_id: z.string().min(1),
+});
+
+// POST /admin/deposits/:deposit_id/assign  — assign to client & credit their ledger
+router.post('/deposits/:deposit_id/assign', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const parsed = assignSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ success: false, errors: parsed.error.flatten() });
+      return;
+    }
+    const deposit = await assignDeposit(req.params.deposit_id, parsed.data.key_id, 'admin');
+    res.json({
+      success: true,
+      message: `Deposit ${deposit.deposit_id} assigned and ${deposit.currency} ${deposit.amount} credited to ${deposit.assigned_to}`,
+      data: { deposit },
+    });
+  } catch (err: unknown) {
+    if (err instanceof Error && (err.message.includes('not found') || err.message.includes('already'))) {
+      res.status(400).json({ success: false, message: err.message });
+      return;
+    }
+    next(err);
+  }
+});
+
+// POST /admin/deposits/:deposit_id/ignore  — mark as ignored (internal / test)
+router.post('/deposits/:deposit_id/ignore', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    await ignoreDeposit(req.params.deposit_id);
+    res.json({ success: true, message: `Deposit ${req.params.deposit_id} marked as ignored` });
+  } catch (err: unknown) {
+    if (err instanceof Error && (err.message.includes('not found') || err.message.includes('already'))) {
+      res.status(400).json({ success: false, message: err.message });
+      return;
+    }
     next(err);
   }
 });
