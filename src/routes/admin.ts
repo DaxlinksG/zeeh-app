@@ -423,7 +423,7 @@ router.delete('/circuit-breakers/:currency', async (req: Request, res: Response,
 
 const hedgeSchema = z.object({
   target_currency: z.string().length(3).toUpperCase(),
-  amount:          z.string().regex(/^\d+(\.\d{1,8})?$/).optional(),
+  amount:          z.string().regex(/^\d+(\.\d{1,2})?$/).optional(),
   source_currency: z.string().length(3).toUpperCase().optional().default('CAD'),
   dry_run:         z.boolean().optional().default(false),
 });
@@ -488,14 +488,17 @@ router.post('/treasury/hedge', async (req: Request, res: Response, next: NextFun
       res.status(400).json({ success: false, message: `No active ${target_currency} wallet found in your Expedier account. Contact Expedier to provision one.` }); return;
     }
 
-    // 3. Get the rate first (so we can show what will happen)
+    // 3. Get the rate — convert shortfall (in target_currency) to from_currency spend amount
+    //    e.g. shortfall=67.32 USD, rate=1.37 (1 USD = 1.37 CAD) → spend 92.23 CAD
     let rate: number | null = null;
-    let toAmountEstimate: number | null = null;
+    // Fetch rate as target→source so we know "how much source do I need per 1 target"
     try {
-      const { data } = await gtp.get(`/rates/${source_currency}/${target_currency}`);
+      const { data } = await gtp.get(`/rates/${target_currency}/${source_currency}`);
       rate = parseFloat(data.data?.buy_rate ?? '0') || null;
-      if (rate) toAmountEstimate = hedgeAmount * rate;
-    } catch { /* rate unavailable — proceed anyway */ }
+    } catch { /* rate unavailable — use 1:1 as safe fallback */ }
+
+    // fromAmount = how much source_currency to spend to acquire hedgeAmount of target_currency
+    const fromAmount = rate ? parseFloat((hedgeAmount * rate).toFixed(2)) : parseFloat(hedgeAmount.toFixed(2));
 
     if (dry_run) {
       res.json({
@@ -504,23 +507,24 @@ router.post('/treasury/hedge', async (req: Request, res: Response, next: NextFun
         message:  `Dry run — no swap executed`,
         data: {
           would_swap: {
-            from_wallet_id: fromWalletId,
-            to_wallet_id:   toWalletId,
-            from_currency:  source_currency,
-            to_currency:    target_currency,
-            from_amount:    hedgeAmount.toFixed(8),
-            estimated_received: toAmountEstimate ? toAmountEstimate.toFixed(2) : 'unknown',
-            rate: rate ?? 'unknown',
+            from_wallet_id:     fromWalletId,
+            to_wallet_id:       toWalletId,
+            from_currency:      source_currency,
+            to_currency:        target_currency,
+            from_amount:        fromAmount.toFixed(2),
+            shortfall_to_cover: hedgeAmount.toFixed(2),
+            rate_used:          rate ?? 'unavailable (1:1 fallback)',
           },
         },
       }); return;
     }
 
     // 4. Execute the hedge swap on GTP (Zeeh's B2B wallets, not a client wallet)
+    console.log(`🏦 Hedge attempt: ${source_currency} ${fromAmount.toFixed(2)} → ${target_currency} ${hedgeAmount.toFixed(2)} (rate=${rate})`);
     const { data: swapData } = await gtp.post('/swap', {
       from_wallet_id: fromWalletId,
       to_wallet_id:   toWalletId,
-      amount:         hedgeAmount.toFixed(8),
+      amount:         fromAmount.toFixed(2),
       from_currency:  source_currency,
       to_currency:    target_currency,
       reference:      `HEDGE-${target_currency}-${Date.now()}`,
@@ -541,16 +545,21 @@ router.post('/treasury/hedge', async (req: Request, res: Response, next: NextFun
       },
     });
   } catch (err: unknown) {
-    // Pass GTP errors through cleanly
-    const axiosErr = err as { response?: { data?: unknown; status?: number } };
-    if (axiosErr.response?.data) {
-      res.status(axiosErr.response.status ?? 502).json({
-        success: false,
-        message: 'Expedier rejected the swap. See details below.',
-        gtp_error: axiosErr.response.data,
+    // Surface GTP errors cleanly instead of returning a bare 500
+    const axiosErr = err as { response?: { data?: unknown; status?: number }; message?: string };
+    if (axiosErr.response) {
+      const status = axiosErr.response.status ?? 502;
+      const body   = axiosErr.response.data;
+      console.error(`🏦 Hedge GTP error ${status}:`, JSON.stringify(body));
+      res.status(status >= 500 ? 502 : status).json({
+        success:   false,
+        message:   `Expedier returned ${status}. See gtp_error for details.`,
+        gtp_error: body ?? null,
       }); return;
     }
-    next(err);
+    // Network/timeout error — no response at all
+    console.error('🏦 Hedge network error:', axiosErr.message);
+    res.status(502).json({ success: false, message: `Could not reach Expedier: ${axiosErr.message ?? 'network error'}` }); return;
   }
 });
 
@@ -574,20 +583,23 @@ router.get('/treasury/hedge/preview/:currency', async (req: Request, res: Respon
     const variance = pos ? parseFloat(pos.variance) : null;
     const shortfall = variance !== null && variance < 0 ? Math.abs(variance) : 0;
 
+    // Rate fetched as target→source (e.g. USD→CAD) = "how much CAD per 1 USD"
     const rate = rateResult.status === 'fulfilled'
       ? parseFloat(rateResult.value.data.data?.buy_rate ?? '0') : null;
+    // estimatedCost = shortfall * rate  (e.g. 67.32 USD * 1.37 = 92.23 CAD)
+    const estimatedCost = rate && shortfall ? (shortfall * rate).toFixed(2) : null;
 
     res.json({
       success: true,
       data: {
-        target_currency:  currency,
-        source_currency:  source,
-        shortfall_amount: shortfall.toFixed(2),
-        estimated_cost_in_source: rate && shortfall ? (shortfall / rate).toFixed(4) : 'unknown',
-        rate_used: rate ?? 'unavailable',
-        ready_to_hedge: shortfall > 0,
+        target_currency:          currency,
+        source_currency:          source,
+        shortfall_amount:         shortfall.toFixed(2),
+        estimated_cost_in_source: estimatedCost ?? 'unknown',
+        rate_used:                rate ?? 'unavailable',
+        ready_to_hedge:           shortfall > 0,
         message: shortfall > 0
-          ? `You need to buy ${shortfall.toFixed(2)} ${currency} using ${source}. POST /admin/treasury/hedge to execute.`
+          ? `You need to spend ~${source} ${estimatedCost ?? '?'} to buy ${currency} ${shortfall.toFixed(2)}. POST /admin/treasury/hedge to execute.`
           : `No shortfall detected for ${currency}.`,
       },
     });
