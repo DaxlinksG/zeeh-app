@@ -2,6 +2,7 @@ import { Router, Request, Response, NextFunction } from 'express';
 import { z } from 'zod';
 import { gtp } from '../lib/gtpClient';
 import { buildQuote, calcConversion } from '../lib/spreadEngine';
+import { isFrozen } from '../lib/circuitBreaker';
 
 const router = Router();
 
@@ -38,6 +39,28 @@ router.get('/', async (_req: Request, res: Response, next: NextFunction) => {
   }
 });
 
+// GET /api/rates/status — list all circuit breaker states (useful for client dashboards)
+router.get('/status', async (_req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { listFrozen } = await import('../lib/circuitBreaker');
+    const frozen = await listFrozen();
+    const frozenSet = new Set(frozen.map(f => f.currency));
+    res.json({
+      success: true,
+      data: {
+        frozen_currencies: frozen.map(f => ({
+          currency:  f.currency,
+          reason:    f.reason,
+          frozen_at: f.frozen_at,
+          frozen_by: f.frozen_by,
+        })),
+        note: 'Frozen currencies will return 503 on swap/transfer requests until resolved.',
+      },
+    });
+    void frozenSet; // suppress unused warning
+  } catch (err) { next(err); }
+});
+
 // GET /api/rates/convert?amount=&from_currency=&to_currency=
 const convertSchema = z.object({
   amount:        z.coerce.number().positive(),
@@ -54,25 +77,34 @@ router.get('/convert', async (req: Request, res: Response, next: NextFunction) =
     }
     const { amount, from_currency, to_currency } = parsed.data;
 
-    const { data } = await gtp.get(`/rates/${from_currency}/${to_currency}`);
-    const entry = data.data as {
-      from_currency: string; to_currency: string;
-      buy_rate: string; updated_at: string; timestamp: string;
-    };
+    let entry: { from_currency: string; to_currency: string; buy_rate: string; updated_at: string; timestamp: string };
+    try {
+      const { data } = await gtp.get(`/rates/${from_currency}/${to_currency}`);
+      entry = data.data as typeof entry;
+    } catch {
+      res.status(422).json({ success: false, message: `Rate not available for ${from_currency}/${to_currency}` }); return;
+    }
 
-    const rawRate    = parseFloat(entry.buy_rate);
+    const rawRate    = parseFloat(entry.buy_rate ?? '0');
+    if (!rawRate || isNaN(rawRate)) {
+      res.status(422).json({ success: false, message: `Rate data missing for ${from_currency}/${to_currency}` }); return;
+    }
     const quote      = buildQuote(from_currency, to_currency, rawRate, entry.timestamp, entry.updated_at, 'live_market');
     const conversion = calcConversion(amount, quote);
+
+    // Include circuit breaker status in the response so clients know before submitting
+    const frozen = await isFrozen(from_currency);
 
     res.json({
       success: true,
       data: {
         from_currency,
         to_currency,
-        from_amount: conversion.fromAmount,
-        to_amount:   conversion.toAmount,
-        rate:        conversion.customerRate,
-        updated_at:  entry.updated_at,
+        from_amount:    conversion.fromAmount,
+        to_amount:      conversion.toAmount,
+        rate:           conversion.customerRate,
+        updated_at:     entry.updated_at,
+        ...(frozen ? { warning: `${from_currency} outflows are currently suspended. Swap requests will be rejected.` } : {}),
       },
     });
   } catch (err) {
@@ -83,15 +115,23 @@ router.get('/convert', async (req: Request, res: Response, next: NextFunction) =
 // GET /api/rates/:from_currency/:to_currency
 router.get('/:from_currency/:to_currency', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { from_currency, to_currency } = req.params;
-    const { data } = await gtp.get(`/rates/${from_currency.toUpperCase()}/${to_currency.toUpperCase()}`);
-    const entry = data.data as {
-      from_currency: string; to_currency: string;
-      buy_rate: string; updated_at: string; timestamp: string;
-    };
+    const from = req.params.from_currency.toUpperCase();
+    const to   = req.params.to_currency.toUpperCase();
 
-    const rawRate = parseFloat(entry.buy_rate);
-    const quote   = buildQuote(from_currency, to_currency, rawRate, entry.timestamp, entry.updated_at, 'live_market');
+    let entry: { from_currency: string; to_currency: string; buy_rate: string; updated_at: string; timestamp: string };
+    try {
+      const { data } = await gtp.get(`/rates/${from}/${to}`);
+      entry = data.data as typeof entry;
+    } catch {
+      res.status(422).json({ success: false, message: `Rate not available for ${from}/${to}. Pair may not be supported by Expedier.` }); return;
+    }
+
+    const rawRate = parseFloat(entry.buy_rate ?? '0');
+    if (!rawRate || isNaN(rawRate)) {
+      res.status(422).json({ success: false, message: `Rate data missing for ${from}/${to}` }); return;
+    }
+    const quote = buildQuote(from, to, rawRate, entry.timestamp, entry.updated_at, 'live_market');
+    const frozen = await isFrozen(from);
 
     res.json({
       success: true,
@@ -102,6 +142,7 @@ router.get('/:from_currency/:to_currency', async (req: Request, res: Response, n
         inverse_rate:  quote.inverseCustomerRate,
         updated_at:    entry.updated_at,
         timestamp:     entry.timestamp,
+        ...(frozen ? { warning: `${from} outflows are currently suspended.` } : {}),
       },
     });
   } catch (err) {

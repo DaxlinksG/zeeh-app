@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { gtp } from '../lib/gtpClient';
 import { auditLog } from '../middleware/logger';
 import { debitBalance, refundBalance, InsufficientBalanceError } from '../lib/ledger';
+import { assertNotFrozen, FrozenCurrencyError } from '../lib/circuitBreaker';
 
 const router = Router();
 
@@ -43,6 +44,13 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
 
     const clientId = req.apiClient!.key_id;
     const { amount, currency, client_reference } = parsed.data;
+
+    // Circuit breaker — block if this currency's outflows are frozen
+    try { await assertNotFrozen(currency); } catch (e) {
+      if (e instanceof FrozenCurrencyError)
+        return void res.status(503).json({ success: false, message: `${currency} transfers are temporarily suspended. Please try again later.`, code: 'CURRENCY_FROZEN' });
+      throw e;
+    }
 
     // ── 1. Debit ledger atomically before touching GTP ─────────────────────
     try {

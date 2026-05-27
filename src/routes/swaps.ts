@@ -4,6 +4,7 @@ import { gtp } from '../lib/gtpClient';
 import { buildQuote, calcConversion } from '../lib/spreadEngine';
 import { auditLog } from '../middleware/logger';
 import { debitBalance, creditBalance, refundBalance, InsufficientBalanceError } from '../lib/ledger';
+import { assertNotFrozen, FrozenCurrencyError } from '../lib/circuitBreaker';
 
 const router = Router();
 
@@ -30,15 +31,25 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
     }
     const body = parsed.data;
 
-    // 1. Fetch current rate
-    const rateRes = await gtp.get(`/rates/${body.from_currency}/${body.to_currency}`);
-    const entry = rateRes.data.data as {
-      buy_rate: string;
-      updated_at: string;
-      timestamp: string;
-    };
+    // Circuit breaker — block if source currency outflows are frozen
+    try { await assertNotFrozen(body.from_currency); } catch (e) {
+      if (e instanceof FrozenCurrencyError)
+        return void res.status(503).json({ success: false, message: `${body.from_currency} swaps are temporarily suspended. Please try again later.`, code: 'CURRENCY_FROZEN' });
+      throw e;
+    }
 
-    const rawRate = parseFloat(entry.buy_rate);
+    // 1. Fetch current rate — return 422 instead of 500 if pair is unsupported
+    let entry: { buy_rate: string; updated_at: string; timestamp: string };
+    try {
+      const rateRes = await gtp.get(`/rates/${body.from_currency}/${body.to_currency}`);
+      entry = rateRes.data.data as typeof entry;
+    } catch {
+      res.status(422).json({ success: false, message: `Exchange rate not available for ${body.from_currency} → ${body.to_currency}` }); return;
+    }
+    const rawRate = parseFloat(entry.buy_rate ?? '0');
+    if (!rawRate || isNaN(rawRate)) {
+      res.status(422).json({ success: false, message: `Rate data unavailable for ${body.from_currency} → ${body.to_currency}` }); return;
+    }
     const fromAmount = parseFloat(body.amount);
     const quote = buildQuote(body.from_currency, body.to_currency, rawRate, entry.timestamp, entry.updated_at, 'live_market');
     const conversion = calcConversion(fromAmount, quote);
