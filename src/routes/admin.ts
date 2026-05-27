@@ -6,6 +6,8 @@ import { listPendingDeposits, assignDeposit, ignoreDeposit, getDeposit } from '.
 import { listUsers, listPendingKyc, getKyc, updateKycStatus, getUserById } from '../lib/userStore';
 import { listDepositInstructions, getDepositInstruction, putDepositInstruction, deleteDepositInstruction } from '../lib/depositConfig';
 import { freezeCurrency, unfreezeCurrency, listFrozen, isFrozen } from '../lib/circuitBreaker';
+import { gtp } from '../lib/gtpClient';
+import { getLatestSnapshot } from '../lib/treasury';
 import {
   sendApiKeyCreated, sendApiKeyRevoked,
   sendKycApproved, sendKycRejected,
@@ -402,6 +404,193 @@ router.delete('/circuit-breakers/:currency', async (req: Request, res: Response,
     const currency = req.params.currency.toUpperCase();
     await unfreezeCurrency(currency);
     res.json({ success: true, message: `${currency} outflows restored` });
+  } catch (err) { next(err); }
+});
+
+// ── Treasury Hedging ──────────────────────────────────────────────────────────
+// When B2C users swap Currency A → Currency B, Zeeh's ledger accrues an obligation
+// in Currency B but holds no real Currency B in GTP. This endpoint executes an
+// actual GTP swap from Zeeh's source wallet (default: CAD) to cover the shortfall.
+//
+// Works in sandbox — no dashboard needed, just API access.
+//
+// POST /admin/treasury/hedge
+// Body: { target_currency, amount?, source_currency?, dry_run? }
+//   target_currency — the currency you're short on (e.g. "USD")
+//   amount          — override amount; omitted → uses latest treasury shortfall
+//   source_currency — wallet to swap FROM (default: "CAD")
+//   dry_run         — if true, only fetch the quote, don't execute
+
+const hedgeSchema = z.object({
+  target_currency: z.string().length(3).toUpperCase(),
+  amount:          z.string().regex(/^\d+(\.\d{1,8})?$/).optional(),
+  source_currency: z.string().length(3).toUpperCase().optional().default('CAD'),
+  dry_run:         z.boolean().optional().default(false),
+});
+
+router.post('/treasury/hedge', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const parsed = hedgeSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ success: false, errors: parsed.error.flatten() }); return;
+    }
+    const { target_currency, source_currency, dry_run } = parsed.data;
+
+    // 1. Determine how much to hedge
+    let hedgeAmount = parsed.data.amount ? parseFloat(parsed.data.amount) : null;
+
+    if (!hedgeAmount) {
+      // Pull from latest treasury snapshot
+      const snap = await getLatestSnapshot();
+      if (!snap) {
+        res.status(400).json({ success: false, message: 'No treasury snapshot found. Run a reconciliation first.' }); return;
+      }
+      const positions = typeof snap.positions === 'string' ? JSON.parse(snap.positions) : snap.positions;
+      const pos = (positions as Array<{ currency: string; variance: string; status: string }>)
+        .find(p => p.currency === target_currency);
+
+      if (!pos) {
+        res.status(400).json({ success: false, message: `No ${target_currency} position found in latest snapshot.` }); return;
+      }
+      const variance = parseFloat(pos.variance);
+      if (isNaN(variance) || variance >= 0) {
+        res.json({ success: true, message: `${target_currency} is not in shortfall (variance: ${pos.variance}). No hedge needed.`, data: { variance: pos.variance } }); return;
+      }
+      hedgeAmount = Math.abs(variance);
+    }
+
+    // 2. Get Zeeh's GTP wallets to find the wallet IDs
+    let wallets: Array<Record<string, unknown>> = [];
+    try {
+      const { data } = await gtp.get('/wallets');
+      wallets = (data.data?.wallets ?? data.data ?? []) as typeof wallets;
+    } catch {
+      res.status(502).json({ success: false, message: 'Could not fetch wallets from Expedier. Check GTP credentials.' }); return;
+    }
+
+    function findWalletId(currency: string): string | null {
+      const w = wallets.find(w => {
+        const cur = typeof w.currency === 'object' && w.currency !== null
+          ? String((w.currency as Record<string, unknown>).code ?? '').toUpperCase()
+          : String(w.currency ?? '').toUpperCase();
+        return cur === currency && (w.status === 'approved' || w.active);
+      });
+      return w ? String(w.wallet_id ?? w.id ?? '') : null;
+    }
+
+    const fromWalletId = findWalletId(source_currency);
+    const toWalletId   = findWalletId(target_currency);
+
+    if (!fromWalletId) {
+      res.status(400).json({ success: false, message: `No active ${source_currency} wallet found in your Expedier account.` }); return;
+    }
+    if (!toWalletId) {
+      res.status(400).json({ success: false, message: `No active ${target_currency} wallet found in your Expedier account. Contact Expedier to provision one.` }); return;
+    }
+
+    // 3. Get the rate first (so we can show what will happen)
+    let rate: number | null = null;
+    let toAmountEstimate: number | null = null;
+    try {
+      const { data } = await gtp.get(`/rates/${source_currency}/${target_currency}`);
+      rate = parseFloat(data.data?.buy_rate ?? '0') || null;
+      if (rate) toAmountEstimate = hedgeAmount * rate;
+    } catch { /* rate unavailable — proceed anyway */ }
+
+    if (dry_run) {
+      res.json({
+        success: true,
+        dry_run:  true,
+        message:  `Dry run — no swap executed`,
+        data: {
+          would_swap: {
+            from_wallet_id: fromWalletId,
+            to_wallet_id:   toWalletId,
+            from_currency:  source_currency,
+            to_currency:    target_currency,
+            from_amount:    hedgeAmount.toFixed(8),
+            estimated_received: toAmountEstimate ? toAmountEstimate.toFixed(2) : 'unknown',
+            rate: rate ?? 'unknown',
+          },
+        },
+      }); return;
+    }
+
+    // 4. Execute the hedge swap on GTP (Zeeh's B2B wallets, not a client wallet)
+    const { data: swapData } = await gtp.post('/swap', {
+      from_wallet_id: fromWalletId,
+      to_wallet_id:   toWalletId,
+      amount:         hedgeAmount.toFixed(8),
+      from_currency:  source_currency,
+      to_currency:    target_currency,
+      reference:      `HEDGE-${target_currency}-${Date.now()}`,
+      metadata:       { type: 'treasury_hedge', triggered_by: 'admin' },
+    });
+
+    console.log(`🏦 Treasury hedge executed: ${source_currency} → ${target_currency} amount=${hedgeAmount}`);
+
+    res.json({
+      success: true,
+      message: `Hedge executed. Swapped ${source_currency} → ${target_currency} ${hedgeAmount.toFixed(2)}. Run reconciliation to verify the shortfall is cleared.`,
+      data: {
+        hedge: swapData.data?.swap ?? swapData.data,
+        hedged_amount:    hedgeAmount.toFixed(2),
+        source_currency,
+        target_currency,
+        next_step:        'Click Reconcile Now in the Treasury tab to verify the shortfall is resolved.',
+      },
+    });
+  } catch (err: unknown) {
+    // Pass GTP errors through cleanly
+    const axiosErr = err as { response?: { data?: unknown; status?: number } };
+    if (axiosErr.response?.data) {
+      res.status(axiosErr.response.status ?? 502).json({
+        success: false,
+        message: 'Expedier rejected the swap. See details below.',
+        gtp_error: axiosErr.response.data,
+      }); return;
+    }
+    next(err);
+  }
+});
+
+// GET /admin/treasury/hedge/preview/:currency — dry-run without body (quick check)
+router.get('/treasury/hedge/preview/:currency', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const currency = req.params.currency.toUpperCase();
+    const source   = String(req.query.from ?? 'CAD').toUpperCase();
+
+    const [snapResult, walletsResult, rateResult] = await Promise.allSettled([
+      getLatestSnapshot(),
+      gtp.get('/wallets'),
+      gtp.get(`/rates/${source}/${currency}`),
+    ]);
+
+    const snap     = snapResult.status === 'fulfilled' ? snapResult.value : null;
+    const positions = snap ? (typeof snap.positions === 'string' ? JSON.parse(snap.positions) : snap.positions) : [];
+    const pos      = (positions as Array<{ currency: string; variance: string; ledger_total: string }>)
+      .find(p => p.currency === currency);
+
+    const variance = pos ? parseFloat(pos.variance) : null;
+    const shortfall = variance !== null && variance < 0 ? Math.abs(variance) : 0;
+
+    const rate = rateResult.status === 'fulfilled'
+      ? parseFloat(rateResult.value.data.data?.buy_rate ?? '0') : null;
+
+    res.json({
+      success: true,
+      data: {
+        target_currency:  currency,
+        source_currency:  source,
+        shortfall_amount: shortfall.toFixed(2),
+        estimated_cost_in_source: rate && shortfall ? (shortfall / rate).toFixed(4) : 'unknown',
+        rate_used: rate ?? 'unavailable',
+        ready_to_hedge: shortfall > 0,
+        message: shortfall > 0
+          ? `You need to buy ${shortfall.toFixed(2)} ${currency} using ${source}. POST /admin/treasury/hedge to execute.`
+          : `No shortfall detected for ${currency}.`,
+      },
+    });
   } catch (err) { next(err); }
 });
 
