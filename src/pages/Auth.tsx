@@ -6,7 +6,7 @@ import { API_BASE } from '../lib/api';
 import { toast } from '../components/Toast';
 
 type Tab    = 'login' | 'register';
-type Screen = 'auth' | 'verify-email';
+type Screen = 'auth' | 'verify-email' | 'forgot-password' | 'forgot-sent';
 
 const COUNTRIES = ['Canada','Nigeria','United States','United Kingdom','Germany','France','Ghana','Kenya','South Africa','Other'];
 
@@ -54,6 +54,23 @@ export default function Auth() {
     } finally { setLoading(false); }
   }
 
+  /* ── FORGOT PASSWORD ─────────────────────────────────────────────────── */
+  const [forgotEmail,  setForgotEmail]  = useState('');
+  const [forgotSentTo, setForgotSentTo] = useState('');
+
+  async function handleForgotPassword(e: React.FormEvent) {
+    e.preventDefault();
+    setLoading(true);
+    try {
+      await axios.post(`${API_BASE}/auth/forgot-password`, { email: forgotEmail });
+      setForgotSentTo(forgotEmail);
+      setScreen('forgot-sent');
+    } catch {
+      // API always returns 200 to prevent user enumeration — genuine network errors land here
+      toast('Something went wrong. Please check your connection and try again.', 'err');
+    } finally { setLoading(false); }
+  }
+
   /* ── VERIFY EMAIL ─────────────────────────────────────────────────────── */
   const [otp, setOtp] = useState('');
 
@@ -83,8 +100,9 @@ export default function Auth() {
     try {
       await axios.post(`${API_BASE}/auth/resend-otp`, {}, { headers: { Authorization: `Bearer ${accessToken}` } });
       toast('New code sent — check your email.');
-    } catch {
-      toast('Could not resend code. Please try again.', 'err');
+    } catch (err: unknown) {
+      const msg = (axios.isAxiosError(err) && err.response?.data?.message) || 'Could not resend code. Please try again.';
+      toast(msg, 'err');
     }
   }
 
@@ -101,8 +119,43 @@ export default function Auth() {
           <div style={{ color: 'var(--muted)', fontSize: '.9rem' }}>Send, receive &amp; exchange across borders</div>
         </div>
 
-        {/* ── Email verification screen ──────────────────────────────────── */}
-        {screen === 'verify-email' ? (
+        {/* ── Forgot password — enter email ────────────────────────────── */}
+        {screen === 'forgot-password' ? (
+          <div className="card">
+            <div style={{ textAlign: 'center', marginBottom: '1.5rem' }}>
+              <div style={{ fontSize: '2.2rem', marginBottom: '.4rem' }}>🔑</div>
+              <div style={{ fontSize: '1.1rem', fontWeight: 700, marginBottom: '.3rem' }}>Reset your password</div>
+              <div style={{ color: 'var(--muted)', fontSize: '.88rem' }}>Enter your email and we'll send a reset link if an account exists.</div>
+            </div>
+            <form onSubmit={handleForgotPassword}>
+              <div className="form-group">
+                <label>Email address</label>
+                <input type="email" required value={forgotEmail} onChange={e => setForgotEmail(e.target.value)} placeholder="you@example.com" />
+              </div>
+              <button className="btn btn-primary btn-full" disabled={loading} style={{ marginTop: '.5rem' }}>
+                {loading ? <span className="spinner" /> : 'Send reset link'}
+              </button>
+            </form>
+            <div style={{ textAlign: 'center', marginTop: '1.2rem', fontSize: '.85rem' }}>
+              <button onClick={() => setScreen('auth')} style={{ background: 'none', border: 'none', color: 'var(--accent)', cursor: 'pointer', fontSize: '.85rem' }}>
+                ← Back to sign in
+              </button>
+            </div>
+          </div>
+
+        ) : screen === 'forgot-sent' ? (
+          <div className="card" style={{ textAlign: 'center' }}>
+            <div style={{ fontSize: '2.5rem', marginBottom: '.8rem' }}>📬</div>
+            <div style={{ fontSize: '1.1rem', fontWeight: 700, marginBottom: '.5rem' }}>Check your inbox</div>
+            <div style={{ color: 'var(--muted)', fontSize: '.88rem', marginBottom: '1.5rem', lineHeight: 1.5 }}>
+              If <strong style={{ color: 'var(--text)' }}>{forgotSentTo}</strong> is registered, you'll receive a password reset link shortly. Check your spam folder if you don't see it.
+            </div>
+            <button className="btn btn-primary btn-full" onClick={() => { setScreen('auth'); setForgotEmail(''); }}>
+              Back to sign in
+            </button>
+          </div>
+
+        ) : screen === 'verify-email' ? (
           <div className="card">
             <div style={{ textAlign: 'center', marginBottom: '1.5rem' }}>
               <div style={{ fontSize: '2.5rem', marginBottom: '.5rem' }}>📧</div>
@@ -172,7 +225,12 @@ export default function Auth() {
                 <input type="email" required value={loginEmail} onChange={e => setLoginEmail(e.target.value)} placeholder="you@example.com" />
               </div>
               <div className="form-group">
-                <label>Password</label>
+                <label style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <span>Password</span>
+                  <button type="button" onClick={() => { setForgotEmail(loginEmail); setScreen('forgot-password'); }} style={{ background: 'none', border: 'none', color: 'var(--accent)', fontSize: '.8rem', cursor: 'pointer', padding: 0, fontWeight: 500 }}>
+                    Forgot password?
+                  </button>
+                </label>
                 <input type="password" required value={loginPass} onChange={e => setLoginPass(e.target.value)} placeholder="••••••••" />
               </div>
               <button className="btn btn-primary btn-full" disabled={loading} style={{ marginTop: '.5rem' }}>

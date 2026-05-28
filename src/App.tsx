@@ -4,6 +4,7 @@ import Layout from './components/Layout';
 import { ToastContainer } from './components/Toast';
 
 import Auth         from './pages/Auth';
+import ResetPassword from './pages/ResetPassword';
 import Dashboard    from './pages/Dashboard';
 import Send         from './pages/Send';
 import Pay          from './pages/Pay';
@@ -27,6 +28,7 @@ export default function App() {
     <BrowserRouter>
       <Routes>
         <Route path="/" element={<PublicRoute><Auth /></PublicRoute>} />
+        <Route path="/reset-password" element={<ResetPassword />} />
         <Route path="/*" element={
           <PrivateRoute>
             <Layout>
