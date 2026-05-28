@@ -12,7 +12,7 @@
 
 const TERMII_BASE     = 'https://api.ng.termii.com/api';
 const TERMII_API_KEY  = () => process.env.TERMII_API_KEY  ?? '';
-const TERMII_SENDER   = () => process.env.TERMII_SENDER_ID ?? 'ZeehAfrica';
+const TERMII_SENDER   = () => process.env.TERMII_SENDER_ID ?? 'Zeeh Africa';
 
 // ── Phone normalisation ────────────────────────────────────────────────────
 // Termii expects E.164 without the leading +.
