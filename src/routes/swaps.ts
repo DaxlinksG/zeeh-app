@@ -63,7 +63,15 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
       await debitBalance(
         clientId, body.from_currency, body.amount, 'swap_debit',
         reference, `Swap ${body.amount} ${body.from_currency} → ${body.to_currency}`,
-        { from_currency: body.from_currency, to_currency: body.to_currency },
+        {
+          from_currency:   body.from_currency,
+          to_currency:     body.to_currency,
+          spread_revenue:  conversion.spreadRevenue.toFixed(4),
+          spread_currency: body.to_currency,           // revenue is in the to-currency
+          spread_pct:      conversion.spreadPct,
+          raw_rate:        rawRate,
+          customer_rate:   conversion.customerRate,
+        },
       );
     } catch (err) {
       if (err instanceof InsufficientBalanceError) {

@@ -19,6 +19,7 @@ import {
   UpdateCommand,
   QueryCommand,
   TransactWriteCommand,
+  ScanCommand,
 } from '@aws-sdk/lib-dynamodb';
 import crypto from 'crypto';
 
@@ -286,6 +287,88 @@ export async function getTransactions(
     Limit: limit,
   }));
   return (result.Items ?? []) as LedgerTxn[];
+}
+
+// ── Admin: scan all transactions across all clients ────────────────────────
+// Uses a full DynamoDB Scan — call from admin-only endpoints, not hot paths.
+export async function scanAllTransactions(opts: {
+  limit?:    number;
+  type?:     string;
+  currency?: string;
+}): Promise<LedgerTxn[]> {
+  const { limit = 300, type, currency } = opts;
+
+  const filterParts: string[] = [];
+  const exprValues: Record<string, unknown>  = {};
+  const exprNames:  Record<string, string>   = {};
+
+  if (type) {
+    filterParts.push('#txntype = :type');
+    exprValues[':type'] = type;
+    exprNames['#txntype'] = 'type';
+  }
+  if (currency) {
+    filterParts.push('currency = :cur');
+    exprValues[':cur'] = currency.toUpperCase();
+  }
+
+  const all: LedgerTxn[] = [];
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let lastKey: Record<string, any> | undefined;
+
+  do {
+    const res = await db.send(new ScanCommand({
+      TableName: TXN_TABLE,
+      ...(filterParts.length ? {
+        FilterExpression: filterParts.join(' AND '),
+        ExpressionAttributeValues: exprValues,
+        ...(Object.keys(exprNames).length ? { ExpressionAttributeNames: exprNames } : {}),
+      } : {}),
+      ...(lastKey ? { ExclusiveStartKey: lastKey } : {}),
+    }));
+    for (const item of res.Items ?? []) all.push(item as LedgerTxn);
+    lastKey = res.LastEvaluatedKey as typeof lastKey;
+    // Stop early once we have well beyond what will be returned
+    if (all.length >= limit * 5) break;
+  } while (lastKey);
+
+  return all
+    .sort((a, b) => b.txn_id.localeCompare(a.txn_id)) // txn_id is timestamp-prefixed
+    .slice(0, limit);
+}
+
+// Admin: aggregate swap P&L from transaction metadata ──────────────────────
+export interface SwapRevenueSummary {
+  total_swaps:  number;
+  // Revenue is captured in to_currency (the spread on the received side)
+  revenue_by_currency: Record<string, { revenue: number; swap_count: number; volume_from: number }>;
+  // Volume traded, by from_currency
+  volume_by_currency:  Record<string, number>;
+}
+
+export async function getSwapRevenueSummary(): Promise<SwapRevenueSummary> {
+  const txns = await scanAllTransactions({ type: 'swap_debit', limit: 5000 });
+
+  const revenue_by_currency: SwapRevenueSummary['revenue_by_currency'] = {};
+  const volume_by_currency:  SwapRevenueSummary['volume_by_currency']  = {};
+
+  for (const t of txns) {
+    const fromCur = t.currency;
+    volume_by_currency[fromCur] = (volume_by_currency[fromCur] ?? 0) + parseFloat(t.amount);
+
+    const meta    = t.metadata ?? {};
+    const revCur  = String(meta.spread_currency ?? meta.to_currency ?? '');
+    const rev     = parseFloat(String(meta.spread_revenue ?? '0'));
+
+    if (revCur) {
+      if (!revenue_by_currency[revCur]) revenue_by_currency[revCur] = { revenue: 0, swap_count: 0, volume_from: 0 };
+      revenue_by_currency[revCur].swap_count++;
+      revenue_by_currency[revCur].volume_from += parseFloat(t.amount);
+      if (!isNaN(rev)) revenue_by_currency[revCur].revenue += rev;
+    }
+  }
+
+  return { total_swaps: txns.length, revenue_by_currency, volume_by_currency };
 }
 
 // ── Custom errors ──────────────────────────────────────────────────────────

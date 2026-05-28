@@ -1,7 +1,7 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { z } from 'zod';
 import { createApiKey, listApiKeys, revokeApiKey, getApiKeyById } from '../lib/keyStore';
-import { creditBalance, getAllBalances, getTransactions } from '../lib/ledger';
+import { creditBalance, getAllBalances, getTransactions, scanAllTransactions, getSwapRevenueSummary } from '../lib/ledger';
 import { listPendingDeposits, assignDeposit, ignoreDeposit, getDeposit } from '../lib/deposits';
 import { listUsers, listPendingKyc, getKyc, updateKycStatus, getUserById } from '../lib/userStore';
 import { listDepositInstructions, getDepositInstruction, putDepositInstruction, deleteDepositInstruction } from '../lib/depositConfig';
@@ -553,6 +553,38 @@ router.post('/treasury/hedge', async (req: Request, res: Response, next: NextFun
 });
 
 // GET /admin/treasury/hedge/preview/:currency — dry-run without body (quick check)
+// GET /admin/transactions/all — scan all ledger transactions across every client
+// Optional query params: limit (default 200, max 500), type, currency
+router.get('/transactions/all', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const limit    = Math.min(parseInt(String(req.query.limit ?? '200'), 10) || 200, 500);
+    const type     = req.query.type     ? String(req.query.type)     : undefined;
+    const currency = req.query.currency ? String(req.query.currency) : undefined;
+
+    const txns = await scanAllTransactions({ limit, type, currency });
+
+    // Attach client names by joining with the API keys list
+    const { listApiKeys: listKeys } = await import('../lib/keyStore');
+    const keys = await listKeys();
+    const nameMap = Object.fromEntries(keys.map(k => [k.key_id, k.client_name]));
+
+    const items = txns.map(t => ({
+      ...t,
+      client_name: nameMap[t.client_id] ?? t.client_id,
+    }));
+
+    res.json({ success: true, data: { transactions: items, count: items.length } });
+  } catch (err) { next(err); }
+});
+
+// GET /admin/analytics/pnl — aggregate P&L from swap spread revenue
+router.get('/analytics/pnl', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const summary = await getSwapRevenueSummary();
+    res.json({ success: true, data: summary });
+  } catch (err) { next(err); }
+});
+
 router.get('/treasury/hedge/preview/:currency', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const currency = req.params.currency.toUpperCase();
