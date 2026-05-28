@@ -2,7 +2,7 @@ name: Deploy to AWS ECS
 
 on:
   push:
-    branches: [main]       # auto-deploy on every push to main
+    branches: [api]        # auto-deploy on every push to api branch
   workflow_dispatch:        # manual trigger from GitHub UI
 
 env:
