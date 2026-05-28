@@ -15,11 +15,9 @@ export default function Auth() {
   const [screen, setScreen] = useState<Screen>('auth');
   const [loading, setLoading] = useState(false);
   const navigate = useNavigate();
-  const { setAuth, updateUser, accessToken } = useAuthStore(s => ({
-    setAuth:     s.setAuth,
-    updateUser:  s.updateUser,
-    accessToken: s.accessToken,
-  }));
+  const setAuth     = useAuthStore(s => s.setAuth);
+  const updateUser  = useAuthStore(s => s.updateUser);
+  const accessToken = useAuthStore(s => s.accessToken);
 
   /* ── LOGIN ────────────────────────────────────────────────────────────── */
   const [loginEmail, setLoginEmail] = useState('');

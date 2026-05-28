@@ -10,7 +10,8 @@ function EmailVerifyBanner() {
   const [showModal, setShowModal] = useState(false);
   const [otp,       setOtp]       = useState('');
   const [loading,   setLoading]   = useState(false);
-  const { accessToken, updateUser } = useAuthStore(s => ({ accessToken: s.accessToken, updateUser: s.updateUser }));
+  const accessToken = useAuthStore(s => s.accessToken);
+  const updateUser  = useAuthStore(s => s.updateUser);
 
   async function sendResend() {
     if (!accessToken) return;
