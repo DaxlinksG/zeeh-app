@@ -7,19 +7,28 @@ import { toast } from '../components/Toast';
 
 /** Inline banner + OTP modal for users who skipped email verification */
 function EmailVerifyBanner() {
-  const [showModal, setShowModal] = useState(false);
-  const [otp,       setOtp]       = useState('');
-  const [loading,   setLoading]   = useState(false);
+  const [showModal,   setShowModal]   = useState(false);
+  const [otp,         setOtp]         = useState('');
+  const [loading,     setLoading]     = useState(false);
+  const [resending,   setResending]   = useState(false);
   const accessToken = useAuthStore(s => s.accessToken);
   const updateUser  = useAuthStore(s => s.updateUser);
 
-  async function sendResend() {
-    if (!accessToken) return;
+  // A code was already sent when the account was created — open the modal directly.
+  // Resend is only triggered explicitly by the user inside the modal.
+  function openModal() { setOtp(''); setShowModal(true); }
+
+  async function handleResend() {
+    if (!accessToken || resending) return;
+    setResending(true);
     try {
       await axios.post(`${API_BASE}/auth/resend-otp`, {}, { headers: { Authorization: `Bearer ${accessToken}` } });
-      toast('Verification code sent — check your email.');
-      setShowModal(true);
-    } catch { toast('Could not send code. Try again.', 'err'); }
+      toast('A new code has been sent — check your email.');
+    } catch (err: unknown) {
+      // Show the API's message verbatim (e.g. "Please wait 52 seconds…") rather than a generic error
+      const msg = (axios.isAxiosError(err) && err.response?.data?.message) || 'Could not resend code. Try again.';
+      toast(msg, 'err');
+    } finally { setResending(false); }
   }
 
   async function handleVerify(e: React.FormEvent) {
@@ -51,11 +60,11 @@ function EmailVerifyBanner() {
         <div>
           <strong style={{ color: 'var(--accent)' }}>📧 Verify your email</strong>
           <div style={{ fontSize: '.84rem', color: 'var(--muted)', marginTop: '.2rem' }}>
-            Verify your email address to secure your account and receive transaction alerts.
+            A verification code was sent to your email when you registered. Enter it to unlock transactions.
           </div>
         </div>
-        <button className="btn btn-primary" style={{ whiteSpace: 'nowrap', fontSize: '.84rem' }} onClick={sendResend}>
-          Verify now
+        <button className="btn btn-primary" style={{ whiteSpace: 'nowrap', fontSize: '.84rem' }} onClick={openModal}>
+          Enter code
         </button>
       </div>
 
@@ -64,8 +73,8 @@ function EmailVerifyBanner() {
           <div className="card" style={{ width: '100%', maxWidth: 380 }}>
             <div style={{ textAlign: 'center', marginBottom: '1.5rem' }}>
               <div style={{ fontSize: '2rem', marginBottom: '.4rem' }}>📧</div>
-              <div style={{ fontWeight: 700, marginBottom: '.3rem' }}>Enter your code</div>
-              <div style={{ fontSize: '.85rem', color: 'var(--muted)' }}>Check your email for a 6-digit code.</div>
+              <div style={{ fontWeight: 700, marginBottom: '.3rem' }}>Verify your email</div>
+              <div style={{ fontSize: '.85rem', color: 'var(--muted)' }}>Enter the 6-digit code sent to your email when you signed up.</div>
             </div>
             <form onSubmit={handleVerify}>
               <input
@@ -74,13 +83,24 @@ function EmailVerifyBanner() {
                 style={{ width: '100%', textAlign: 'center', fontSize: '1.6rem', letterSpacing: '0.3em', fontFamily: 'monospace', marginBottom: '1rem', padding: '.7rem', background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 'var(--radius)', color: 'var(--text)' }}
                 required
               />
-              <div style={{ display: 'flex', gap: '.6rem' }}>
+              <div style={{ display: 'flex', gap: '.6rem', marginBottom: '1rem' }}>
                 <button type="button" className="btn" style={{ flex: 1 }} onClick={() => setShowModal(false)}>Cancel</button>
                 <button type="submit" className="btn btn-primary" style={{ flex: 2 }} disabled={loading || otp.length !== 6}>
                   {loading ? <span className="spinner" /> : 'Verify'}
                 </button>
               </div>
             </form>
+            <div style={{ textAlign: 'center', fontSize: '.82rem', color: 'var(--muted)' }}>
+              Didn't receive a code?{' '}
+              <button
+                type="button"
+                onClick={handleResend}
+                disabled={resending}
+                style={{ background: 'none', border: 'none', color: 'var(--accent)', cursor: 'pointer', padding: 0, fontSize: 'inherit', textDecoration: 'underline' }}
+              >
+                {resending ? 'Sending…' : 'Resend code'}
+              </button>
+            </div>
           </div>
         </div>
       )}
