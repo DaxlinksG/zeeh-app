@@ -82,8 +82,9 @@ Returns **HTTP 429** when exceeded. Retry after 60 seconds.
     { name: 'Wallets',   description: 'Balances, deposit instructions (on-ramp), and transaction history' },
     { name: 'Banks',     description: 'Bank lookup and account validation' },
     { name: 'Account',   description: 'Your account details and settings' },
-    { name: 'Webhooks',  description: 'Receive payment event notifications' },
-    { name: 'System',    description: 'Service health' },
+    { name: 'Webhooks',         description: 'Receive payment event notifications' },
+    { name: 'Virtual Accounts', description: 'Assign unique deposit references to your end-customers so inbound payments are matched and credited automatically' },
+    { name: 'System',           description: 'Service health' },
   ],
 
   components: {
@@ -198,6 +199,35 @@ Returns **HTTP 429** when exceeded. Retry after 60 seconds.
           name:      { type: 'string', example: 'ACCESS BANK' },
           code:      { type: 'string', example: '044' },
           currency:  { type: 'string', example: 'NGN' },
+        },
+      },
+
+      // ── Virtual Accounts ──────────────────────────────────────
+      VirtualAccount: {
+        type: 'object',
+        properties: {
+          account_id:     { type: 'string', example: 'VA-4F8B2C1A', description: 'Unique identifier for this virtual account' },
+          customer_id:    { type: 'string', example: 'CUST-001',    description: 'Your own internal customer reference' },
+          customer_name:  { type: 'string', example: 'John Doe' },
+          currency:       { type: 'string', example: 'CAD' },
+          reference_code: { type: 'string', example: 'ZVA-4F8B2C', description: 'The unique code your customer MUST include in their payment reference/description' },
+          status:         { type: 'string', enum: ['active', 'inactive'], example: 'active' },
+          total_credited: { type: 'string', example: '500.00', description: 'Running total of all deposits matched to this account' },
+          created_at:     { type: 'string', format: 'date-time' },
+        },
+      },
+      DepositInstructions: {
+        type: 'object',
+        properties: {
+          currency:       { type: 'string', example: 'CAD' },
+          method:         { type: 'string', example: 'Interac eTransfer' },
+          bank_name:      { type: 'string', example: 'Interac' },
+          account_name:   { type: 'string', example: 'Zeeh Africa' },
+          account_number: { type: 'string', example: '9900002060' },
+          send_to_email:  { type: 'string', example: 'payments@zeehfi.ca', description: 'CAD Interac eTransfer only' },
+          iban:           { type: 'string', example: 'DE89370400440532012060', description: 'EUR only' },
+          reference_code: { type: 'string', example: 'ZVA-4F8B2C', description: 'MUST be included in the payment reference' },
+          instructions:   { type: 'string', example: 'Include exactly "ZVA-4F8B2C" as the payment reference/description.' },
         },
       },
 
@@ -1122,6 +1152,227 @@ Each currency has its own dedicated account — funds credited automatically upo
       },
     },
 
+    // ── VIRTUAL ACCOUNTS ─────────────────────────────────────────
+    '/api/virtual-accounts': {
+      post: {
+        tags: ['Virtual Accounts'],
+        summary: 'Create a virtual account',
+        description: `Generate a unique deposit reference for one of your end-customers.
+
+**How it works:**
+
+1. Call this endpoint for each customer — you get back a \`reference_code\` (e.g. \`ZVA-4F8B2C\`) and deposit instructions
+2. Share the deposit instructions with your customer
+3. Your customer sends money to Zeeh's pooled bank account and puts \`ZVA-4F8B2C\` in the payment reference/description
+4. Zeeh automatically matches the incoming deposit to this virtual account and credits **your** ledger
+5. A \`virtual_account.credited\` webhook fires to your endpoint
+
+> **Important:** Instruct your customer to include the exact \`reference_code\` in the payment description. If they forget it, the deposit goes into the unmatched queue for manual assignment.`,
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['customer_id', 'customer_name', 'currency'],
+                properties: {
+                  customer_id:   { type: 'string', example: 'CUST-001',  description: 'Your internal reference for this customer — returned on every webhook so you can reconcile in your system' },
+                  customer_name: { type: 'string', example: 'John Doe',  description: 'Human-readable label — appears in your dashboard and webhook payloads' },
+                  currency:      { type: 'string', enum: ['CAD', 'USD', 'GBP', 'EUR', 'NGN'], example: 'CAD', description: 'Currency the customer will deposit. One virtual account per currency per customer.' },
+                  description:   { type: 'string', example: 'Wallet top-up for premium tier', description: 'Optional internal note' },
+                  metadata:      { type: 'object', example: { plan: 'premium', region: 'Ontario' }, description: 'Any additional key-value data you want attached to this account' },
+                },
+              },
+              examples: {
+                CAD: {
+                  summary: '🇨🇦 CAD virtual account (Interac)',
+                  value: { customer_id: 'CUST-001', customer_name: 'John Doe', currency: 'CAD', description: 'Wallet funding' },
+                },
+                NGN: {
+                  summary: '🇳🇬 NGN virtual account (Bank Transfer)',
+                  value: { customer_id: 'CUST-002', customer_name: 'Amara Okafor', currency: 'NGN' },
+                },
+                GBP: {
+                  summary: '🇬🇧 GBP virtual account (Faster Payments)',
+                  value: { customer_id: 'CUST-003', customer_name: 'Sophie Williams', currency: 'GBP', metadata: { tier: 'business' } },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          201: {
+            description: 'Virtual account created — share `deposit_instructions` with your customer',
+            content: {
+              'application/json': {
+                example: {
+                  success: true,
+                  message: 'Virtual account created. Share the deposit instructions with your customer.',
+                  data: {
+                    virtual_account: {
+                      account_id:     'VA-4F8B2C1A',
+                      customer_id:    'CUST-001',
+                      customer_name:  'John Doe',
+                      currency:       'CAD',
+                      reference_code: 'ZVA-4F8B2C',
+                      status:         'active',
+                      total_credited: '0.00',
+                      created_at:     '2026-05-28T10:00:00.000Z',
+                    },
+                    deposit_instructions: {
+                      currency:       'CAD',
+                      method:         'Interac eTransfer',
+                      bank_name:      'Interac',
+                      account_name:   'Zeeh Africa',
+                      send_to_email:  'payments@zeehfi.ca',
+                      reference_code: 'ZVA-4F8B2C',
+                      instructions:   'Include exactly "ZVA-4F8B2C" as the payment reference/description. This is how we match your deposit to your account.',
+                    },
+                  },
+                },
+              },
+            },
+          },
+          400: { description: 'Validation error — check currency and required fields', content: { 'application/json': { schema: { $ref: '#/components/schemas/ValidationError' } } } },
+          401: { $ref: '#/components/responses/Unauthorized' },
+          429: { $ref: '#/components/responses/RateLimited' },
+        },
+      },
+      get: {
+        tags: ['Virtual Accounts'],
+        summary: 'List virtual accounts',
+        description: 'Returns all virtual accounts you have created. Filter by currency or status.',
+        parameters: [
+          { name: 'currency', in: 'query', schema: { type: 'string', example: 'CAD' },           description: 'Filter by currency' },
+          { name: 'status',   in: 'query', schema: { type: 'string', enum: ['active','inactive'] }, description: 'Filter by status' },
+          { name: 'limit',    in: 'query', schema: { type: 'integer', default: 50, maximum: 200 }, description: 'Max results to return' },
+        ],
+        responses: {
+          200: {
+            description: 'List of virtual accounts',
+            content: {
+              'application/json': {
+                example: {
+                  success: true,
+                  data: {
+                    virtual_accounts: [
+                      { account_id: 'VA-4F8B2C1A', customer_id: 'CUST-001', customer_name: 'John Doe',      currency: 'CAD', reference_code: 'ZVA-4F8B2C', status: 'active', total_credited: '500.00', created_at: '2026-05-28T10:00:00.000Z' },
+                      { account_id: 'VA-3E7A1B2C', customer_id: 'CUST-002', customer_name: 'Amara Okafor', currency: 'NGN', reference_code: 'ZVA-3E7A1B', status: 'active', total_credited: '0.00',   created_at: '2026-05-27T09:00:00.000Z' },
+                    ],
+                    count: 2,
+                  },
+                },
+              },
+            },
+          },
+          401: { $ref: '#/components/responses/Unauthorized' },
+        },
+      },
+    },
+
+    '/api/virtual-accounts/{account_id}': {
+      get: {
+        tags: ['Virtual Accounts'],
+        summary: 'Get a virtual account',
+        description: 'Returns full details including fresh deposit instructions. Share these with your customer whenever they need to make a deposit.',
+        parameters: [
+          { name: 'account_id', in: 'path', required: true, schema: { type: 'string', example: 'VA-4F8B2C1A' }, description: 'Virtual account ID' },
+        ],
+        responses: {
+          200: {
+            description: 'Virtual account details with deposit instructions',
+            content: {
+              'application/json': {
+                example: {
+                  success: true,
+                  data: {
+                    virtual_account: {
+                      account_id:     'VA-4F8B2C1A',
+                      customer_id:    'CUST-001',
+                      customer_name:  'John Doe',
+                      currency:       'CAD',
+                      reference_code: 'ZVA-4F8B2C',
+                      status:         'active',
+                      description:    'Wallet top-up',
+                      total_credited: '500.00',
+                      created_at:     '2026-05-28T10:00:00.000Z',
+                      updated_at:     '2026-05-28T14:30:00.000Z',
+                    },
+                    deposit_instructions: {
+                      currency:       'CAD',
+                      method:         'Interac eTransfer',
+                      bank_name:      'Interac',
+                      account_name:   'Zeeh Africa',
+                      send_to_email:  'payments@zeehfi.ca',
+                      reference_code: 'ZVA-4F8B2C',
+                      instructions:   'Include exactly "ZVA-4F8B2C" as the payment reference/description.',
+                    },
+                  },
+                },
+              },
+            },
+          },
+          401: { $ref: '#/components/responses/Unauthorized' },
+          404: { $ref: '#/components/responses/NotFound' },
+        },
+      },
+      delete: {
+        tags: ['Virtual Accounts'],
+        summary: 'Deactivate a virtual account',
+        description: `Sets the virtual account status to \`inactive\`. Any future deposits referencing this code will **not** be auto-credited — they will go to the unmatched pending queue instead.
+
+> This is a soft delete. The account record and its history are preserved. This action cannot be undone via API — contact support to reactivate.`,
+        parameters: [
+          { name: 'account_id', in: 'path', required: true, schema: { type: 'string', example: 'VA-4F8B2C1A' }, description: 'Virtual account ID to deactivate' },
+        ],
+        responses: {
+          200: {
+            description: 'Virtual account deactivated',
+            content: { 'application/json': { example: { success: true, message: 'Virtual account deactivated. No further deposits will be credited to it.' } } },
+          },
+          400: { description: 'Account is already inactive', content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } } },
+          401: { $ref: '#/components/responses/Unauthorized' },
+          404: { $ref: '#/components/responses/NotFound' },
+        },
+      },
+    },
+
+    '/api/virtual-accounts/{account_id}/transactions': {
+      get: {
+        tags: ['Virtual Accounts'],
+        summary: 'Transaction history for a virtual account',
+        description: 'Returns all deposits that were matched and credited to this virtual account, newest first.',
+        parameters: [
+          { name: 'account_id', in: 'path', required: true, schema: { type: 'string', example: 'VA-4F8B2C1A' }, description: 'Virtual account ID' },
+          { name: 'limit', in: 'query', schema: { type: 'integer', default: 50, maximum: 200 }, description: 'Max results' },
+        ],
+        responses: {
+          200: {
+            description: 'Deposit history for this virtual account',
+            content: {
+              'application/json': {
+                example: {
+                  success: true,
+                  data: {
+                    account_id:  'VA-4F8B2C1A',
+                    customer_id: 'CUST-001',
+                    currency:    'CAD',
+                    transactions: [
+                      { txn_id: 'txn_301', amount: '300.00', currency: 'CAD', balance_after: '500.00', description: 'Virtual account deposit — John Doe (CUST-001)', created_at: '2026-05-28T14:30:00.000Z' },
+                      { txn_id: 'txn_288', amount: '200.00', currency: 'CAD', balance_after: '200.00', description: 'Virtual account deposit — John Doe (CUST-001)', created_at: '2026-05-27T10:00:00.000Z' },
+                    ],
+                    count: 2,
+                  },
+                },
+              },
+            },
+          },
+          401: { $ref: '#/components/responses/Unauthorized' },
+          404: { $ref: '#/components/responses/NotFound' },
+        },
+      },
+    },
+
     '/webhooks/receive': {
       post: {
         tags: ['Webhooks'],
@@ -1135,10 +1386,11 @@ Respond with **HTTP 200** within 10 seconds — failed deliveries are retried au
 
 | Event | Description |
 |---|---|
-| \`transfer.completed\` | Payout delivered to recipient |
-| \`transfer.failed\`    | Payout failed |
-| \`swap.completed\`     | Currency swap completed |
-| \`wallet.funded\`      | Wallet received a deposit |`,
+| \`transfer.completed\`       | Payout delivered to recipient |
+| \`transfer.failed\`          | Payout failed |
+| \`swap.completed\`           | Currency swap completed |
+| \`wallet.funded\`            | Wallet received a deposit |
+| \`virtual_account.credited\` | A virtual account deposit was matched and credited to your ledger |`,
         requestBody: {
           content: {
             'application/json': {
@@ -1164,6 +1416,22 @@ Respond with **HTTP 200** within 10 seconds — failed deliveries are retried au
                       swap_id: '881', status: 'completed',
                       from_currency: 'CAD', to_currency: 'NGN',
                       from_amount: '1000.00', to_amount: '1267500.00',
+                    },
+                  },
+                },
+                virtual_account_credited: {
+                  summary: 'virtual_account.credited',
+                  value: {
+                    event: 'virtual_account.credited',
+                    data: {
+                      account_id:     'VA-4F8B2C1A',
+                      customer_id:    'CUST-001',
+                      customer_name:  'John Doe',
+                      currency:       'CAD',
+                      amount:         '300.00',
+                      reference_code: 'ZVA-4F8B2C',
+                      total_credited: '500.00',
+                      credited_at:    '2026-05-28T14:30:00.000Z',
                     },
                   },
                 },
