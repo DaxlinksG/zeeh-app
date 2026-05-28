@@ -296,6 +296,30 @@ export async function runAutoHedge(
   let totalSpent = 0;
   const results: HedgeResult[] = [];
 
+  // ── Verify source wallet has sufficient balance before attempting any hedge ──
+  // If the CAD wallet is near-empty we should not attempt swaps (they'd fail) and
+  // should alert loudly so ops can top it up before the shortfall worsens.
+  let sourceWalletBalance = 0;
+  try {
+    const { data } = await gtp.get(`/wallets/${sourceCurrency}`);
+    const w = data.data?.wallet as Record<string, unknown> | undefined ?? data.data;
+    sourceWalletBalance = parseFloat(
+      String(w?.balance ?? w?.available_balance ?? w?.ledger_balance ?? '0'),
+    );
+  } catch {
+    console.error(`⚠️  Auto-hedge: cannot fetch ${sourceCurrency} wallet balance from Expedier. Aborting hedge run.`);
+    return [{ currency: sourceCurrency, shortfall: 0, from_currency: sourceCurrency, from_amount: 0, status: 'failed', reason: `Cannot read ${sourceCurrency} source wallet balance — Expedier unreachable` }];
+  }
+
+  if (sourceWalletBalance <= 0) {
+    console.error(`🚨 Auto-hedge: ${sourceCurrency} source wallet has zero balance. Cannot hedge. Ops intervention required.`);
+    return [{ currency: sourceCurrency, shortfall: 0, from_currency: sourceCurrency, from_amount: 0, status: 'failed', reason: `${sourceCurrency} source wallet balance is ${sourceWalletBalance} — insufficient to hedge` }];
+  }
+
+  // Cap maxPerRun to what the source wallet actually has (with 5% safety buffer)
+  const effectiveCap = Math.min(maxPerRun, sourceWalletBalance * 0.95);
+  console.log(`🏦  Auto-hedge: ${sourceCurrency} source balance=${sourceWalletBalance.toFixed(2)}, effective cap=${effectiveCap.toFixed(2)}`);
+
   // Only hedge currencies that are critical AND have a real Expedier position
   const candidates = positions.filter(
     p => p.status === 'critical' && p.expedier_balance !== 'N/A',
@@ -327,8 +351,8 @@ export async function runAutoHedge(
       ? parseFloat((shortfall * rate).toFixed(2))
       : parseFloat(shortfall.toFixed(2));
 
-    if (totalSpent + fromAmount > maxPerRun) {
-      results.push({ currency: pos.currency, shortfall, from_currency: sourceCurrency, from_amount: fromAmount, status: 'skipped', reason: `Would exceed AUTO_HEDGE_MAX_PER_RUN (${maxPerRun} ${sourceCurrency})` });
+    if (totalSpent + fromAmount > effectiveCap) {
+      results.push({ currency: pos.currency, shortfall, from_currency: sourceCurrency, from_amount: fromAmount, status: 'skipped', reason: `Would exceed effective cap (${effectiveCap.toFixed(2)} ${sourceCurrency} — limited by wallet balance or AUTO_HEDGE_MAX_PER_RUN)` });
       continue;
     }
 

@@ -253,6 +253,37 @@ router.post('/resend-otp', async (req: Request, res: Response, next: NextFunctio
       return;
     }
 
+    // Per-user resend cooldown (60 s) — prevents an attacker from using rotating
+    // IPs to repeatedly reset the OTP attempt counter and brute-force the code.
+    const OTP_TTL_SECONDS = 10 * 60; // must match userStore constant
+    const OTP_RESEND_COOLDOWN_S = 60;
+    const OTP_MAX_RESENDS_PER_HOUR = 5;
+
+    if (user.otp_expires) {
+      const requestedAt = user.otp_expires - OTP_TTL_SECONDS; // Unix timestamp when last OTP was issued
+      const secondsSince = Math.floor(Date.now() / 1000) - requestedAt;
+      if (secondsSince < OTP_RESEND_COOLDOWN_S) {
+        res.status(429).json({
+          success: false,
+          message: `Please wait ${OTP_RESEND_COOLDOWN_S - secondsSince} second(s) before requesting a new code.`,
+          code:    'RESEND_TOO_FAST',
+        });
+        return;
+      }
+      // Hourly cap — otp_resend_count is incremented on each resend and cleared with a new OTP
+      const resendCount = user.otp_attempts ?? 0; // reuse otp_attempts as resend counter pre-OTP
+      // We approximate the hourly window as: if requestedAt < now-3600, it's a new hour
+      const isNewHour = secondsSince >= 3600;
+      if (!isNewHour && resendCount >= OTP_MAX_RESENDS_PER_HOUR) {
+        res.status(429).json({
+          success: false,
+          message: 'You have requested too many verification codes. Please wait an hour before trying again.',
+          code:    'RESEND_LIMIT_REACHED',
+        });
+        return;
+      }
+    }
+
     const otp = generateOtp();
     await storeOtp(user.user_id, otp);
     sendOtpResend(user.email, user.first_name, otp);              // email — non-blocking

@@ -17,6 +17,7 @@
 
 import { Router, Request, Response, NextFunction } from 'express';
 import { z } from 'zod';
+import crypto from 'crypto';
 import {
   getUserById, getUserByEmail,
   updateUserProfile, submitKyc, getKyc,
@@ -24,6 +25,7 @@ import {
 import {
   getBalance, getAllBalances, getTransactions,
   debitBalance, creditBalance, refundBalance,
+  findTransactionByReference,
   InsufficientBalanceError,
 } from '../lib/ledger';
 import { gtp } from '../lib/gtpClient';
@@ -45,6 +47,24 @@ import {
 import { assertNotFrozen, FrozenCurrencyError } from '../lib/circuitBreaker';
 
 const router = Router();
+
+// ── Per-transaction amount ceiling ─────────────────────────────────────────
+// MAX_TXN_AMOUNT is denominated in the transaction currency.
+// Default 10,000 — set MAX_TXN_AMOUNT in env to adjust per environment.
+// This caps single-transaction exposure in case an account is compromised.
+const MAX_TXN_AMOUNT = parseFloat(process.env.MAX_TXN_AMOUNT ?? '10000');
+
+function checkAmountCap(amount: string, res: Response): boolean {
+  if (parseFloat(amount) > MAX_TXN_AMOUNT) {
+    res.status(400).json({
+      success: false,
+      message: `Transaction amount exceeds the per-transaction limit of ${MAX_TXN_AMOUNT}. Please contact support for higher limits.`,
+      code:    'AMOUNT_EXCEEDS_LIMIT',
+    });
+    return false;
+  }
+  return true;
+}
 
 // ── Profile ────────────────────────────────────────────────────────────────
 router.get('/profile', async (req: Request, res: Response, next: NextFunction) => {
@@ -301,6 +321,8 @@ router.post('/send', requireEmailVerified, userTransferLimiter, async (req: Requ
     const { recipient_email, currency, amount, note } = parsed.data;
     const senderId = req.user!.user_id;
 
+    if (!checkAmountCap(amount, res)) return;
+
     // Circuit breaker — block if this currency's outflows are frozen
     try { await assertNotFrozen(currency); } catch (e) {
       if (e instanceof FrozenCurrencyError)
@@ -384,6 +406,20 @@ router.post('/transfer', requireEmailVerified, requireKyc, userTransferLimiter, 
     const { amount, currency, client_reference } = parsed.data;
     const userId = req.user!.user_id;
 
+    if (!checkAmountCap(amount, res)) return;
+
+    // Idempotency guard — reject if this reference was already debited for this user.
+    // Prevents double-spend on network retries and accidental duplicate submissions.
+    const existingTxn = await findTransactionByReference(userId, client_reference, 'debit');
+    if (existingTxn) {
+      res.status(409).json({
+        success: false,
+        message: 'This reference has already been processed. Use a unique client_reference for each transfer.',
+        code:    'DUPLICATE_REFERENCE',
+        data:    { txn_id: existingTxn.txn_id, processed_at: existingTxn.created_at },
+      }); return;
+    }
+
     // Circuit breaker — block outflows for frozen currencies
     try { await assertNotFrozen(currency); } catch (e) {
       if (e instanceof FrozenCurrencyError)
@@ -445,6 +481,8 @@ router.post('/swap', requireEmailVerified, requireKyc, userTransferLimiter, asyn
     const body   = parsed.data;
     const userId = req.user!.user_id;
 
+    if (!checkAmountCap(body.amount, res)) return;
+
     if (body.from_currency === body.to_currency) {
       res.status(400).json({ success: false, message: 'from_currency and to_currency must differ' }); return;
     }
@@ -471,7 +509,22 @@ router.post('/swap', requireEmailVerified, requireKyc, userTransferLimiter, asyn
     }
     const quote     = buildQuote(body.from_currency, body.to_currency, rawRate, entry?.timestamp ?? '', entry?.updated_at ?? '', 'live_market');
     const conv      = calcConversion(parseFloat(body.amount), quote);
-    const reference = body.reference ?? `SWAP-${Date.now()}`;
+    const reference = body.reference ?? `SWAP-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`;
+
+    // Idempotency guard — only enforced when caller explicitly provides a reference.
+    // Auto-generated references are always unique; a user-provided reference is a
+    // signal that they want at-most-once semantics on that reference.
+    if (body.reference) {
+      const existingSwap = await findTransactionByReference(userId, body.reference, 'debit');
+      if (existingSwap) {
+        res.status(409).json({
+          success: false,
+          message: 'This swap reference has already been executed. Use a unique reference for each swap.',
+          code:    'DUPLICATE_REFERENCE',
+          data:    { txn_id: existingSwap.txn_id, processed_at: existingSwap.created_at },
+        }); return;
+      }
+    }
 
     // 2. Debit from_currency
     try {
@@ -488,9 +541,19 @@ router.post('/swap', requireEmailVerified, requireKyc, userTransferLimiter, asyn
     try {
       await creditBalance(userId, body.to_currency, conv.toAmount.toFixed(2), reference,
         `Swap credit ${body.from_currency} → ${body.to_currency}`);
-    } catch (err) {
-      await refundBalance(userId, body.from_currency, body.amount, reference, 'Swap credit failed').catch(() => {});
-      throw err;
+    } catch (creditErr) {
+      // Attempt to refund the debit — if THIS also fails the user has been debited
+      // with no credit. Log loudly so ops can intervene manually.
+      await refundBalance(userId, body.from_currency, body.amount, reference, 'Swap credit failed')
+        .catch(refundErr => {
+          console.error(
+            `🚨 CRITICAL: swap refund failed for user=${userId} ref=${reference} ` +
+            `amount=${body.amount} ${body.from_currency}. MANUAL CREDIT REQUIRED.`,
+            { creditErr, refundErr },
+          );
+          // TODO: send ops alert email/Slack here once monitoring is wired up
+        });
+      throw creditErr;
     }
 
     auditLog('user.swap', req, { user_id: userId, from_currency: body.from_currency, to_currency: body.to_currency, from_amount: conv.fromAmount, to_amount: conv.toAmount, rate: conv.customerRate });

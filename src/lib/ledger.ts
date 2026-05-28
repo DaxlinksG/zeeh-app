@@ -54,8 +54,15 @@ export interface LedgerTxn {
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────
+// dec() is defence-in-depth ONLY — debitBalance's ConditionExpression is the
+// primary atomic guard. If somehow this is called with a > b it is a bug and
+// must throw loudly rather than silently produce a negative balance string.
 function dec(a: string, b: string): string {
-  return (parseFloat(a) - parseFloat(b)).toFixed(2);
+  const result = parseFloat(a) - parseFloat(b);
+  if (result < -0.001) {
+    throw new Error(`LEDGER_ARITHMETIC_UNDERFLOW: ${a} - ${b} = ${result.toFixed(4)}. This is a critical bug — balance would go negative.`);
+  }
+  return Math.max(0, result).toFixed(2);
 }
 function add(a: string, b: string): string {
   return (parseFloat(a) + parseFloat(b)).toFixed(2);
@@ -174,6 +181,10 @@ export async function creditBalance(
 }
 
 // ── Debit (transfer or swap_debit) — atomic, fails if insufficient ─────────
+// Uses DynamoDB ConditionExpression on `available` to prevent double-spend under
+// concurrent requests. Retries up to MAX_RETRIES times in case the contention was
+// caused by a concurrent CREDIT (deposit) rather than another debit — a credit
+// increases `available` so the debit might now succeed on the next read.
 export async function debitBalance(
   clientId:    string,
   currency:    string,
@@ -183,63 +194,85 @@ export async function debitBalance(
   description: string,
   metadata?:   Record<string, unknown>,
 ): Promise<LedgerBalance> {
-  const current = await ensureBalance(clientId, currency);
+  const MAX_RETRIES = 3;
+  const amountNum = parseFloat(amount);
 
-  if (parseFloat(current.available) < parseFloat(amount)) {
-    throw new InsufficientBalanceError(currency, amount, current.available);
-  }
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    const current = await ensureBalance(clientId, currency);
 
-  const newBalance   = dec(current.balance, amount);
-  const newAvailable = dec(current.available, amount);
-  const now          = new Date().toISOString();
-
-  try {
-    await db.send(new TransactWriteCommand({
-      TransactItems: [
-        {
-          Update: {
-            TableName: LEDGER_TABLE,
-            Key: { client_id: clientId, currency },
-            UpdateExpression: 'SET balance = :b, available = :a, updated_at = :t',
-            // Atomic guard — reject if available has changed since we read it
-            ConditionExpression: 'available = :currentAvail',
-            ExpressionAttributeValues: {
-              ':b':            newBalance,
-              ':a':            newAvailable,
-              ':t':            now,
-              ':currentAvail': current.available,
-            },
-          },
-        },
-        {
-          Put: {
-            TableName: TXN_TABLE,
-            Item: {
-              client_id: clientId,
-              txn_id:    txnId(),
-              type,
-              currency,
-              amount,
-              direction:     'debit',
-              balance_after: newBalance,
-              reference,
-              description,
-              created_at: now,
-              metadata: metadata ?? {},
-            } as LedgerTxn,
-          },
-        },
-      ],
-    }));
-  } catch (err: unknown) {
-    // ConditionCheckFailure = concurrent request already moved the balance
-    if ((err as { name?: string }).name === 'TransactionCanceledException') {
+    if (parseFloat(current.available) < amountNum) {
       throw new InsufficientBalanceError(currency, amount, current.available);
     }
-    throw err;
+
+    const newBalance   = dec(current.balance, amount);
+    const newAvailable = dec(current.available, amount);
+    const now          = new Date().toISOString();
+
+    try {
+      await db.send(new TransactWriteCommand({
+        TransactItems: [
+          {
+            Update: {
+              TableName: LEDGER_TABLE,
+              Key: { client_id: clientId, currency },
+              UpdateExpression: 'SET balance = :b, available = :a, updated_at = :t',
+              // Atomic guard — the write is rejected if another writer changed
+              // `available` between our read and this write.
+              ConditionExpression: 'available = :currentAvail',
+              ExpressionAttributeValues: {
+                ':b':            newBalance,
+                ':a':            newAvailable,
+                ':t':            now,
+                ':currentAvail': current.available,
+              },
+            },
+          },
+          {
+            Put: {
+              TableName: TXN_TABLE,
+              Item: {
+                client_id: clientId,
+                txn_id:    txnId(),
+                type,
+                currency,
+                amount,
+                direction:     'debit',
+                balance_after: newBalance,
+                reference,
+                description,
+                created_at: now,
+                metadata: metadata ?? {},
+              } as LedgerTxn,
+            },
+          },
+        ],
+      }));
+
+      return { ...current, balance: newBalance, available: newAvailable, updated_at: now };
+    } catch (err: unknown) {
+      if ((err as { name?: string }).name !== 'TransactionCanceledException') throw err;
+
+      // Contention: re-read the balance to determine whether to retry or reject.
+      // If a concurrent debit happened, available is now lower → reject.
+      // If a concurrent credit happened, available may be higher → retry the debit.
+      if (attempt < MAX_RETRIES) {
+        const fresh = await ensureBalance(clientId, currency);
+        if (parseFloat(fresh.available) < amountNum) {
+          throw new InsufficientBalanceError(currency, amount, fresh.available);
+        }
+        // Balance is still sufficient — the contention was a credit, retry.
+        await new Promise(r => setTimeout(r, 15 * (attempt + 1)));
+        continue;
+      }
+
+      // Exhausted retries — read one final time for an accurate error message.
+      const final = await ensureBalance(clientId, currency);
+      throw new InsufficientBalanceError(currency, amount, final.available);
+    }
   }
 
-  return { ...current, balance: newBalance, available: newAvailable, updated_at: now };
+  // TypeScript: unreachable but satisfies return type
+  throw new InsufficientBalanceError(currency, amount, '0.00');
 }
 
 // ── Refund (reverse a failed transaction) ─────────────────────────────────
