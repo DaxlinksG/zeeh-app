@@ -109,7 +109,10 @@ async function send(to: string, subject: string, html: string): Promise<void> {
     return;
   }
   try {
-    await client.emails.send({ from: FROM, replyTo: REPLY_TO, to, subject, html });
+    const { error } = await client.emails.send({ from: FROM, replyTo: REPLY_TO, to, subject, html });
+    if (error) {
+      console.error(`📧 [MAILER] Resend error sending "${subject}" to ${to}:`, JSON.stringify(error));
+    }
   } catch (err) {
     console.error(`📧 [MAILER] Failed to send "${subject}" to ${to}:`, err);
   }
