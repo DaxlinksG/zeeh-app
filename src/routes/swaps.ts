@@ -89,13 +89,31 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
     });
 
     // 4. Credit client's to_currency ledger with what they receive
-    await creditBalance(
-      clientId, body.to_currency,
-      conversion.toAmount.toFixed(2),
-      reference,
-      `Swap credit ${body.from_currency} → ${body.to_currency}`,
-      { from_currency: body.from_currency, to_currency: body.to_currency },
-    ).catch(() => {/* non-fatal — reconcile via webhook */});
+    // If this fails the GTP swap already executed — log loudly so it can be
+    // manually reconciled. Never silently discard.
+    try {
+      await creditBalance(
+        clientId, body.to_currency,
+        conversion.toAmount.toFixed(2),
+        reference,
+        `Swap credit ${body.from_currency} → ${body.to_currency}`,
+        { from_currency: body.from_currency, to_currency: body.to_currency },
+      );
+    } catch (creditErr) {
+      console.error(
+        `🚨 SWAP CREDIT FAILED — GTP swap executed but ledger credit failed. ` +
+        `client=${clientId} ref=${reference} to_currency=${body.to_currency} ` +
+        `amount=${conversion.toAmount.toFixed(2)}. Manual reconciliation required.`,
+        creditErr,
+      );
+      auditLog('swap.credit_failed', req, {
+        client_id: clientId, reference,
+        to_currency: body.to_currency, to_amount: conversion.toAmount.toFixed(2),
+        error: String(creditErr),
+      });
+      // Still return success — GTP swap is done. The credit will be recovered
+      // from the swap.completed webhook or by admin reconciliation.
+    }
 
     auditLog('swap.executed', req, {
       from_currency: body.from_currency,

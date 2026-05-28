@@ -23,6 +23,29 @@ import { runReconciliation, getSnapshots, getLatestSnapshot } from './lib/treasu
 import { getVirtualAccountByReference, recordVirtualAccountCredit } from './lib/virtualAccountStore';
 import virtualAccountsRouter from './routes/virtualAccounts';
 import { creditBalance } from './lib/ledger';
+import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
+import { DynamoDBDocumentClient, PutCommand as DdbPutCommand } from '@aws-sdk/lib-dynamodb';
+
+// ── Webhook idempotency store ──────────────────────────────────────────────
+// Deduplicates GTP webhook deliveries — GTP retries on any non-200 response.
+// Each event_key is stored for 7 days (TTL) then auto-purged.
+const _wdb = DynamoDBDocumentClient.from(new DynamoDBClient({ region: process.env.AWS_REGION ?? 'ca-central-1' }));
+const WEBHOOK_DEDUP_TABLE = process.env.WEBHOOK_DEDUP_TABLE ?? 'zeeh-processed-webhooks';
+
+async function markWebhookProcessed(eventKey: string): Promise<boolean> {
+  const ttl = Math.floor(Date.now() / 1000) + 7 * 24 * 60 * 60; // 7 days
+  try {
+    await _wdb.send(new DdbPutCommand({
+      TableName: WEBHOOK_DEDUP_TABLE,
+      Item: { event_key: eventKey, processed_at: new Date().toISOString(), ttl },
+      ConditionExpression: 'attribute_not_exists(event_key)', // fails if already exists
+    }));
+    return true;  // first time — process it
+  } catch (err: unknown) {
+    if ((err as { name?: string }).name === 'ConditionalCheckFailedException') return false; // duplicate
+    throw err; // real error — let it bubble
+  }
+}
 
 const app = express();
 
@@ -213,12 +236,36 @@ app.post('/webhooks/receive', async (req, res) => {
   const eventType = String(event.type ?? event.event ?? 'unknown');
   const ts        = new Date().toISOString();
 
-  // ── Structured console log ────────────────────────────────────────────────
+  // ── Idempotency check — deduplicate GTP retries ───────────────────────────
+  // GTP retries any webhook that doesn't get a fast 200. We derive a stable
+  // event key from the event's own ID, or fall back to a content hash.
+  const meta     = event.meta as Record<string, unknown> | undefined;
+  const eventId  = String(meta?.request_id ?? event.event_id ?? event.id ?? '');
   const data     = event.data as Record<string, unknown> | undefined;
-  const status   = data?.status   ?? event.status;
   const amount   = String(data?.amount   ?? event.amount   ?? '');
   const currency = String(data?.currency ?? event.currency ?? '');
   const ref      = String(data?.reference ?? data?.client_reference ?? data?.transfer_id ?? data?.swap_id ?? data?.wallet_id ?? event.reference ?? '');
+
+  // Build a stable dedup key: prefer GTP's request_id, fall back to content hash
+  const eventKey = eventId
+    ? `${eventType}:${eventId}`
+    : `${eventType}:${currency}:${amount}:${ref}:${String(meta?.timestamp ?? ts)}`;
+
+  try {
+    const isNew = await markWebhookProcessed(eventKey);
+    if (!isNew) {
+      console.log(`⏭️  Webhook duplicate — skipping already-processed event: ${eventKey}`);
+      res.status(200).json({ received: true, duplicate: true });
+      return;
+    }
+  } catch (dedupErr) {
+    // If dedup table is unreachable, log and continue — better to process twice
+    // than to reject a real event. Alert is loud enough for ops to notice.
+    console.error('⚠️  Webhook dedup check failed — processing anyway:', dedupErr);
+  }
+
+  // ── Structured console log ────────────────────────────────────────────────
+  const status   = data?.status   ?? event.status;
 
   console.log(`\n${'─'.repeat(60)}`);
   console.log(`📨  WEBHOOK EVENT  [${ts}]`);
@@ -292,8 +339,18 @@ app.post('/webhooks/receive', async (req, res) => {
 app.use('/admin', adminRouter);
 
 // ── Admin: Treasury endpoints (inline — same admin key auth) ──────────────
+import { timingSafeEqual as _tse } from 'crypto';
+function timingSafeKeyCheck(a: string, b: string): boolean {
+  try {
+    const ab = Buffer.from(a.padEnd(256, '\0'));
+    const bb = Buffer.from(b.padEnd(256, '\0'));
+    return _tse(ab, bb) && a.length === b.length;
+  } catch { return false; }
+}
 const adminKeyCheck = (req: express.Request, res: express.Response, next: express.NextFunction) => {
-  if (req.headers['x-admin-key'] !== process.env.ADMIN_KEY) {
+  const provided = String(req.headers['x-admin-key'] ?? '');
+  const expected = process.env.ADMIN_KEY ?? '';
+  if (!expected || !timingSafeKeyCheck(provided, expected)) {
     res.status(401).json({ success: false, message: 'Invalid admin key' }); return;
   }
   next();

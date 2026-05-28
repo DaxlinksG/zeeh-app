@@ -2,7 +2,7 @@ import { Router, Request, Response, NextFunction } from 'express';
 import { z } from 'zod';
 import { gtp } from '../lib/gtpClient';
 import { auditLog } from '../middleware/logger';
-import { debitBalance, refundBalance, InsufficientBalanceError } from '../lib/ledger';
+import { debitBalance, refundBalance, findTransactionByReference, InsufficientBalanceError } from '../lib/ledger';
 import { assertNotFrozen, FrozenCurrencyError } from '../lib/circuitBreaker';
 
 const router = Router();
@@ -44,6 +44,17 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
 
     const clientId = req.apiClient!.key_id;
     const { amount, currency, client_reference } = parsed.data;
+
+    // Idempotency — if this client_reference was already processed, return the original result
+    const existing = await findTransactionByReference(clientId, client_reference, 'debit');
+    if (existing) {
+      res.status(200).json({
+        success: true,
+        message: 'Duplicate request — this client_reference was already processed.',
+        data: { idempotent: true, original_txn_id: existing.txn_id, created_at: existing.created_at },
+      });
+      return;
+    }
 
     // Circuit breaker — block if this currency's outflows are frozen
     try { await assertNotFrozen(currency); } catch (e) {

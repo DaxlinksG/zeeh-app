@@ -1,4 +1,5 @@
 import { Request, Response, NextFunction } from 'express';
+import { timingSafeEqual } from 'crypto';
 import { lookupKey } from '../lib/keyStore';
 
 // Extend Express Request to carry the resolved client info
@@ -7,6 +8,18 @@ declare global {
     interface Request {
       apiClient?: { key_id: string; client_name: string; client_email: string };
     }
+  }
+}
+
+// Timing-safe string comparison — prevents key-length leaks via response time
+function timingSafeStringEqual(a: string, b: string): boolean {
+  try {
+    // Pad to same length so comparison time doesn't reveal length
+    const aBuf = Buffer.from(a.padEnd(256, '\0'));
+    const bBuf = Buffer.from(b.padEnd(256, '\0'));
+    return timingSafeEqual(aBuf, bBuf) && a.length === b.length;
+  } catch {
+    return false;
   }
 }
 
@@ -30,21 +43,20 @@ export async function requireApiKey(req: Request, res: Response, next: NextFunct
       return next();
     }
 
-    // 2. Fall back to SERVICE_API_KEY env var (your own internal access)
+    // 2. Fall back to SERVICE_API_KEY env var (internal access only)
+    //    Timing-safe comparison prevents key-length oracle attacks
     const masterKey = process.env.SERVICE_API_KEY;
-    if (masterKey && key === masterKey) {
+    if (masterKey && timingSafeStringEqual(key, masterKey)) {
       req.apiClient = { key_id: 'master', client_name: 'Internal', client_email: 'internal' };
       return next();
     }
 
     res.status(401).json({ success: false, message: 'Invalid or missing API key' });
-  } catch {
-    // If DynamoDB is unreachable, fall back to master key only
-    const masterKey = process.env.SERVICE_API_KEY;
-    if (masterKey && key === masterKey) {
-      req.apiClient = { key_id: 'master', client_name: 'Internal', client_email: 'internal' };
-      return next();
-    }
-    res.status(401).json({ success: false, message: 'Invalid or missing API key' });
+  } catch (err) {
+    // DynamoDB is unreachable — do NOT fall back to master-key-only access.
+    // An attacker watching for outage windows should not gain access.
+    // Log loudly and return 503 so the client retries.
+    console.error('🚨 Auth: DynamoDB unreachable — rejecting all requests until recovered:', err);
+    res.status(503).json({ success: false, message: 'Authentication service temporarily unavailable. Please retry in a moment.' });
   }
 }

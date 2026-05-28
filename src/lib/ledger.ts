@@ -6,6 +6,9 @@
  *
  * Atomic balance check + deduct uses DynamoDB ConditionExpression so two
  * simultaneous requests can never double-spend the same balance.
+ *
+ * creditBalance also uses optimistic locking (up to 3 retries) so concurrent
+ * credits can never overwrite each other.
  */
 
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
@@ -96,7 +99,9 @@ export async function getAllBalances(clientId: string): Promise<LedgerBalance[]>
   return (result.Items ?? []) as LedgerBalance[];
 }
 
-// ── Credit (deposit) ───────────────────────────────────────────────────────
+// ── Credit (deposit) — optimistic locking, up to 3 retries ───────────────
+// Uses ConditionExpression to guard against concurrent writes overwriting
+// each other. Retries up to 3 times on contention before throwing.
 export async function creditBalance(
   clientId:    string,
   currency:    string,
@@ -105,43 +110,66 @@ export async function creditBalance(
   description: string,
   metadata?:   Record<string, unknown>,
 ): Promise<LedgerBalance> {
-  const current = await ensureBalance(clientId, currency);
-  const newBalance   = add(current.balance, amount);
-  const newAvailable = add(current.available, amount);
-  const now          = new Date().toISOString();
+  const MAX_RETRIES = 3;
 
-  await db.send(new TransactWriteCommand({
-    TransactItems: [
-      {
-        Update: {
-          TableName: LEDGER_TABLE,
-          Key: { client_id: clientId, currency },
-          UpdateExpression: 'SET balance = :b, available = :a, updated_at = :t',
-          ExpressionAttributeValues: { ':b': newBalance, ':a': newAvailable, ':t': now },
-        },
-      },
-      {
-        Put: {
-          TableName: TXN_TABLE,
-          Item: {
-            client_id: clientId,
-            txn_id:    txnId(),
-            type:      'deposit',
-            currency,
-            amount,
-            direction:     'credit',
-            balance_after: newBalance,
-            reference,
-            description,
-            created_at: now,
-            metadata: metadata ?? {},
-          } as LedgerTxn,
-        },
-      },
-    ],
-  }));
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    const current      = await ensureBalance(clientId, currency);
+    const newBalance   = add(current.balance, amount);
+    const newAvailable = add(current.available, amount);
+    const now          = new Date().toISOString();
 
-  return { ...current, balance: newBalance, available: newAvailable, updated_at: now };
+    try {
+      await db.send(new TransactWriteCommand({
+        TransactItems: [
+          {
+            Update: {
+              TableName: LEDGER_TABLE,
+              Key: { client_id: clientId, currency },
+              UpdateExpression: 'SET balance = :b, available = :a, updated_at = :t',
+              // Optimistic lock — reject if another writer changed balance since we read it
+              ConditionExpression: 'balance = :currentBalance',
+              ExpressionAttributeValues: {
+                ':b':             newBalance,
+                ':a':             newAvailable,
+                ':t':             now,
+                ':currentBalance': current.balance,
+              },
+            },
+          },
+          {
+            Put: {
+              TableName: TXN_TABLE,
+              Item: {
+                client_id: clientId,
+                txn_id:    txnId(),
+                type:      'deposit',
+                currency,
+                amount,
+                direction:     'credit',
+                balance_after: newBalance,
+                reference,
+                description,
+                created_at: now,
+                metadata: metadata ?? {},
+              } as LedgerTxn,
+            },
+          },
+        ],
+      }));
+
+      return { ...current, balance: newBalance, available: newAvailable, updated_at: now };
+    } catch (err: unknown) {
+      const isContention = (err as { name?: string }).name === 'TransactionCanceledException';
+      if (isContention && attempt < MAX_RETRIES) {
+        // Brief back-off before retry (10ms × attempt)
+        await new Promise(r => setTimeout(r, 10 * (attempt + 1)));
+        continue;
+      }
+      throw err;
+    }
+  }
+
+  throw new Error(`creditBalance: failed after ${MAX_RETRIES} retries due to concurrent writes`);
 }
 
 // ── Debit (transfer or swap_debit) — atomic, fails if insufficient ─────────
@@ -222,6 +250,27 @@ export async function refundBalance(
   reason:    string,
 ): Promise<void> {
   await creditBalance(clientId, currency, amount, reference, `Refund: ${reason}`);
+}
+
+// ── Idempotency check — has this reference been processed already? ─────────
+// Used by transfers and swaps to prevent double-debits on duplicate requests.
+export async function findTransactionByReference(
+  clientId:   string,
+  reference:  string,
+  direction:  'debit' | 'credit' = 'debit',
+): Promise<LedgerTxn | null> {
+  // Scan recent txns for this client filtered by reference
+  // (a GSI on reference would be faster at scale — acceptable for now)
+  const result = await db.send(new QueryCommand({
+    TableName:                 TXN_TABLE,
+    KeyConditionExpression:    'client_id = :id',
+    FilterExpression:          'reference = :ref AND direction = :dir',
+    ExpressionAttributeValues: { ':id': clientId, ':ref': reference, ':dir': direction },
+    ScanIndexForward:          false,
+    Limit:                     10,
+  }));
+  if (!result.Items || result.Items.length === 0) return null;
+  return result.Items[0] as LedgerTxn;
 }
 
 // ── Transaction history ────────────────────────────────────────────────────
