@@ -2,6 +2,7 @@ import { Router, Request, Response, NextFunction } from 'express';
 import { z } from 'zod';
 import { AxiosResponse } from 'axios';
 import { gtp } from '../lib/gtpClient';
+import { getWalletId } from '../lib/walletCache';
 import { buildQuote, calcConversion } from '../lib/spreadEngine';
 import { auditLog } from '../middleware/logger';
 import { debitBalance, creditBalance, refundBalance, InsufficientBalanceError } from '../lib/ledger';
@@ -10,8 +11,10 @@ import { assertNotFrozen, FrozenCurrencyError } from '../lib/circuitBreaker';
 const router = Router();
 
 const swapSchema = z.object({
-  from_wallet_id: z.string().min(1),
-  to_wallet_id: z.string().min(1),
+  // Wallet IDs are optional — the server resolves them from the wallet cache.
+  // Callers only need to provide from_currency and to_currency.
+  from_wallet_id: z.string().min(1).optional(),
+  to_wallet_id: z.string().min(1).optional(),
   amount: z.string().regex(/^\d+(\.\d{1,2})?$/, 'Amount must be a decimal string e.g. "100.00"'),
   from_currency: z.string().length(3).toUpperCase(),
   to_currency: z.string().length(3).toUpperCase(),
@@ -86,12 +89,19 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
     }
 
     // 3. Execute the swap with GTP — refund the debit if Expedier fails
+    // Resolve wallet IDs server-side if the caller didn't supply them.
+    // Expedier gives us one wallet per currency; callers only need to know currencies.
+    const [fromWalletId, toWalletId] = await Promise.all([
+      body.from_wallet_id ? Promise.resolve(body.from_wallet_id) : getWalletId(body.from_currency),
+      body.to_wallet_id   ? Promise.resolve(body.to_wallet_id)   : getWalletId(body.to_currency),
+    ]);
+
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let swapRes: AxiosResponse<any>;
     try {
       swapRes = await gtp.post('/swap', {
-        from_wallet_id: body.from_wallet_id,
-        to_wallet_id:   body.to_wallet_id,
+        from_wallet_id: fromWalletId,
+        to_wallet_id:   toWalletId,
         amount:         body.amount,
         from_currency:  body.from_currency,
         to_currency:    body.to_currency,

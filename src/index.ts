@@ -23,6 +23,7 @@ import { runReconciliation, getSnapshots, getLatestSnapshot } from './lib/treasu
 import { getVirtualAccountByReference, recordVirtualAccountCredit } from './lib/virtualAccountStore';
 import virtualAccountsRouter from './routes/virtualAccounts';
 import { creditBalance } from './lib/ledger';
+import { warmWalletCache } from './lib/walletCache';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, PutCommand as DdbPutCommand } from '@aws-sdk/lib-dynamodb';
 
@@ -405,6 +406,12 @@ app.listen(PORT, () => {
   // Any critical flag (shortfall, fraud) prints bold error lines.
   const intervalMs = parseInt(process.env.TREASURY_INTERVAL_MS ?? String(15 * 60 * 1000), 10);
   console.log(`🏦  Treasury reconciliation scheduled every ${intervalMs / 1000}s`);
+
+  // Warm the wallet ID cache — resolves Expedier wallet IDs by currency code
+  // so swap callers don't need to know or pass wallet IDs themselves.
+  warmWalletCache().catch(err =>
+    console.warn('⚠️  Wallet cache warm failed (non-fatal):', err),
+  );
 
   // Initial run after 30s (give server time to stabilise)
   setTimeout(() => {
