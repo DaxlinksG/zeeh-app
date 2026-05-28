@@ -33,13 +33,16 @@ export default function Profile() {
     address: { street: '', city: '', state: '', country: '', postal_code: '' },
   });
 
-  // Load full profile
+  // Load full profile — also syncs kyc_status and email_verified into the store
+  // so admin approvals are reflected without requiring a logout/login.
   useEffect(() => {
     api.get('/me/profile').then(r => {
       const u = r.data.data;
       setProfile({ first_name: u.first_name, last_name: u.last_name, phone: u.phone ?? '', country: u.country ?? '' });
+      // Sync any server-side changes (KYC approval, email verification) back to the store
+      updateUser({ kyc_status: u.kyc_status, email_verified: u.email_verified });
     }).catch(() => {});
-  }, []);
+  }, [updateUser]);
 
   async function saveProfile(e: React.FormEvent) {
     e.preventDefault();

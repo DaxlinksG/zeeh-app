@@ -126,17 +126,29 @@ const quickActions = [
 ];
 
 export default function Dashboard() {
-  const { user } = useAuthStore();
+  const { user, updateUser } = useAuthStore();
   const [balances, setBalances] = useState<Balance[]>([]);
   const [loading,  setLoading]  = useState(true);
   const navigate = useNavigate();
 
   useEffect(() => {
-    api.get('/me/balance')
-      .then(r => setBalances(r.data.data?.balances ?? []))
-      .catch(() => toast('Failed to load balances', 'err'))
-      .finally(() => setLoading(false));
-  }, []);
+    // Fetch balances and sync profile in parallel.
+    // The profile sync keeps kyc_status and email_verified fresh so admin
+    // approvals are reflected immediately without a logout/login.
+    Promise.all([
+      api.get('/me/balance'),
+      api.get('/me/profile'),
+    ]).then(([balRes, profileRes]) => {
+      setBalances(balRes.data.data?.balances ?? []);
+      const u = profileRes.data.data;
+      updateUser({ kyc_status: u.kyc_status, email_verified: u.email_verified });
+    }).catch(() => {
+      // Fallback: at least try to load balances independently
+      api.get('/me/balance')
+        .then(r => setBalances(r.data.data?.balances ?? []))
+        .catch(() => toast('Failed to load balances', 'err'));
+    }).finally(() => setLoading(false));
+  }, [updateUser]);
 
   // totalUsd reserved for future portfolio value widget
 
