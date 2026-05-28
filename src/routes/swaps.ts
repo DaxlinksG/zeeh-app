@@ -1,5 +1,6 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { z } from 'zod';
+import { AxiosResponse } from 'axios';
 import { gtp } from '../lib/gtpClient';
 import { buildQuote, calcConversion } from '../lib/spreadEngine';
 import { auditLog } from '../middleware/logger';
@@ -76,17 +77,56 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
       throw err;
     }
 
-    // 3. Execute the swap with GTP — refund if it fails
-    const swapRes = await gtp.post('/swap', {
-      from_wallet_id: body.from_wallet_id,
-      to_wallet_id: body.to_wallet_id,
-      amount: body.amount,
-      from_currency: body.from_currency,
-      to_currency: body.to_currency,
-      lock_rate: body.lock_rate,
-      reference: body.reference,
-      metadata: body.metadata,
-    });
+    // 3. Execute the swap with GTP — refund the debit if Expedier fails
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let swapRes: AxiosResponse<any>;
+    try {
+      swapRes = await gtp.post('/swap', {
+        from_wallet_id: body.from_wallet_id,
+        to_wallet_id:   body.to_wallet_id,
+        amount:         body.amount,
+        from_currency:  body.from_currency,
+        to_currency:    body.to_currency,
+        lock_rate:      body.lock_rate,
+        reference:      body.reference,
+        metadata:       body.metadata,
+      });
+    } catch (gtpErr) {
+      // Expedier call failed — restore the client's balance before returning the error
+      await refundBalance(
+        clientId, body.from_currency, body.amount,
+        reference, `Expedier swap failed`,
+      ).catch(refundErr => {
+        // Refund also failed — money is stuck, needs manual fix
+        console.error(
+          `🚨 SWAP REFUND FAILED — Expedier error AND ledger refund failed. ` +
+          `client=${clientId} ref=${reference} ${body.from_currency} ${body.amount}. ` +
+          `Manual reconciliation required.`,
+          refundErr,
+        );
+        auditLog('swap.refund_failed', req, {
+          client_id: clientId, reference,
+          currency: body.from_currency, amount: body.amount,
+          error: String(refundErr),
+        });
+      });
+
+      auditLog('swap.expedier_error', req, {
+        client_id:     clientId,
+        reference,
+        from_currency: body.from_currency,
+        to_currency:   body.to_currency,
+        amount:        body.amount,
+        error:         String(gtpErr),
+      });
+
+      res.status(502).json({
+        success: false,
+        message: 'Currency exchange is temporarily unavailable. Your balance has not been charged.',
+        code:    'SWAP_PROVIDER_ERROR',
+      });
+      return;
+    }
 
     // 4. Credit client's to_currency ledger with what they receive
     // If this fails the GTP swap already executed — log loudly so it can be
