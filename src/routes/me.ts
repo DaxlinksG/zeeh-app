@@ -37,6 +37,10 @@ import {
   sendSwapCompleted,
   sendTransferInitiated,
 } from '../lib/mailer';
+import {
+  sendMoneyReceivedSms, sendMoneySentSms,
+  sendSwapSms, sendTransferInitiatedSms,
+} from '../lib/sms';
 import { assertNotFrozen, FrozenCurrencyError } from '../lib/circuitBreaker';
 
 const router = Router();
@@ -329,11 +333,13 @@ router.post('/send', async (req: Request, res: Response, next: NextFunction) => 
 
     auditLog('p2p.send', req, { sender: senderId, recipient: recipient.user_id, currency, amount, reference });
 
-    // Email notifications (fire-and-forget)
+    // Email + SMS notifications (fire-and-forget)
     const senderUser = await getUserById(senderId).catch(() => null);
     const senderName = senderUser ? `${senderUser.first_name} ${senderUser.last_name}` : req.user!.email;
     sendMoneySent(req.user!.email, senderUser?.first_name ?? '', recipient.email, currency, amount, reference);
     sendMoneyReceived(recipient.email, recipient.first_name, senderName, currency, amount);
+    if (senderUser?.phone)   sendMoneySentSms(senderUser.phone, senderUser.first_name, currency, amount, reference);
+    if (recipient.phone)     sendMoneyReceivedSms(recipient.phone, recipient.first_name, senderName, currency, amount);
 
     res.status(201).json({
       success: true,
@@ -406,9 +412,11 @@ router.post('/transfer', requireKyc, async (req: Request, res: Response, next: N
 
     auditLog('user.transfer', req, { user_id: userId, amount, currency, client_reference });
 
-    // Email notification (fire-and-forget)
+    // Email + SMS notification (fire-and-forget)
     getUserById(userId).then(u => {
-      if (u) sendTransferInitiated(u.email, u.first_name, currency, amount, client_reference);
+      if (!u) return;
+      sendTransferInitiated(u.email, u.first_name, currency, amount, client_reference);
+      if (u.phone) sendTransferInitiatedSms(u.phone, u.first_name, currency, amount, client_reference);
     }).catch(() => {});
 
     res.status(201).json(gtpData);
@@ -484,13 +492,19 @@ router.post('/swap', requireKyc, async (req: Request, res: Response, next: NextF
 
     auditLog('user.swap', req, { user_id: userId, from_currency: body.from_currency, to_currency: body.to_currency, from_amount: conv.fromAmount, to_amount: conv.toAmount, rate: conv.customerRate });
 
-    // Email notification (fire-and-forget)
+    // Email + SMS notification (fire-and-forget)
     getUserById(userId).then(u => {
-      if (u) sendSwapCompleted(
+      if (!u) return;
+      sendSwapCompleted(
         u.email, u.first_name,
         body.from_currency, conv.fromAmount.toFixed(2),
         body.to_currency,   conv.toAmount.toFixed(2),
         conv.customerRate.toFixed(4),
+      );
+      if (u.phone) sendSwapSms(
+        u.phone, u.first_name,
+        body.from_currency, conv.fromAmount.toFixed(2),
+        body.to_currency,   conv.toAmount.toFixed(2),
       );
     }).catch(() => {});
 

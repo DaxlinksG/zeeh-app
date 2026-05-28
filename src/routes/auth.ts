@@ -18,6 +18,7 @@ import {
   decodeRefreshJti,
 } from '../lib/jwtHelper';
 import { sendWelcomeOtp, sendOtpResend, sendEmailVerified } from '../lib/mailer';
+import { sendOtpSms } from '../lib/sms';
 
 const router = Router();
 
@@ -42,10 +43,11 @@ router.post('/register', async (req: Request, res: Response, next: NextFunction)
 
     const user = await createUser(email, password, first_name, last_name, phone, country);
 
-    // Generate + send OTP (fire-and-forget)
+    // Generate + send OTP via email + SMS (fire-and-forget)
     const otp = generateOtp();
     await storeOtp(user.user_id, otp);
-    sendWelcomeOtp(user.email, user.first_name, otp); // non-blocking
+    sendWelcomeOtp(user.email, user.first_name, otp);           // email — non-blocking
+    if (user.phone) sendOtpSms(user.phone, otp, user.first_name); // SMS  — non-blocking
 
     const [accessToken, refreshToken] = await Promise.all([
       signAccessToken({ sub: user.user_id, email: user.email, kyc_status: user.kyc_status, email_verified: false }),
@@ -253,7 +255,8 @@ router.post('/resend-otp', async (req: Request, res: Response, next: NextFunctio
 
     const otp = generateOtp();
     await storeOtp(user.user_id, otp);
-    sendOtpResend(user.email, user.first_name, otp); // non-blocking
+    sendOtpResend(user.email, user.first_name, otp);              // email — non-blocking
+    if (user.phone) sendOtpSms(user.phone, otp, user.first_name); // SMS  — non-blocking
 
     res.json({ success: true, message: 'A new verification code has been sent to your email' });
   } catch (err) {
