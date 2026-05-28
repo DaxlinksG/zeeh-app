@@ -435,19 +435,33 @@ export async function saveSnapshot(snapshot: TreasurySnapshot): Promise<void> {
 
 export async function getSnapshots(limit = 20): Promise<TreasurySnapshot[]> {
   try {
-    const res = await db.send(new ScanCommand({
-      TableName: SNAPSHOTS_TABLE,
-      Limit: limit * 3, // over-fetch because scan is unordered
-    }));
-    const items = ((res.Items ?? []) as Array<TreasurySnapshot & { positions: string; fraud_flags: string }>)
+    // DynamoDB Scan is unordered and Limit caps items *scanned*, not returned.
+    // With 100s of snapshots a small Limit misses the newest rows entirely.
+    // Paginate through the full table, sort client-side, then slice.
+    const all: Array<TreasurySnapshot & { positions: string; fraud_flags: string }> = [];
+    let lastKey: Record<string, unknown> | undefined;
+
+    do {
+      const res = await db.send(new ScanCommand({
+        TableName:         SNAPSHOTS_TABLE,
+        ExclusiveStartKey: lastKey as Record<string, import('@aws-sdk/lib-dynamodb').NativeAttributeValue> | undefined,
+        ProjectionExpression: 'snapshot_id, #ts, overall_status, duration_ms, triggered_by, total_accounts, expedier_available, positions, fraud_flags',
+        ExpressionAttributeNames: { '#ts': 'timestamp' },
+      }));
+      for (const item of (res.Items ?? [])) {
+        all.push(item as TreasurySnapshot & { positions: string; fraud_flags: string });
+      }
+      lastKey = res.LastEvaluatedKey as Record<string, unknown> | undefined;
+    } while (lastKey);
+
+    return all
+      .sort((a, b) => b.timestamp.localeCompare(a.timestamp))
+      .slice(0, limit)
       .map(item => ({
         ...item,
         positions:   JSON.parse(item.positions  ?? '[]') as CurrencyPosition[],
         fraud_flags: JSON.parse(item.fraud_flags ?? '[]') as FraudFlag[],
-      }))
-      .sort((a, b) => b.timestamp.localeCompare(a.timestamp))
-      .slice(0, limit);
-    return items;
+      }));
   } catch {
     return [];
   }
