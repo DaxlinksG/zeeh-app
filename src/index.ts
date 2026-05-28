@@ -5,7 +5,7 @@ import swaggerUi from 'swagger-ui-express';
 import { requireApiKey } from './middleware/auth';
 import { errorHandler } from './middleware/errorHandler';
 import { requestId, httpLogger } from './middleware/logger';
-import { apiLimiter, transferLimiter, quoteLimiter } from './middleware/rateLimiter';
+import { apiLimiter, transferLimiter, quoteLimiter, authLimiter, userLimiter } from './middleware/rateLimiter';
 import { openapiSpec } from './openapi';
 import ratesRouter from './routes/rates';
 import swapsRouter from './routes/swaps';
@@ -50,7 +50,14 @@ async function markWebhookProcessed(eventKey: string): Promise<boolean> {
 
 const app = express();
 
-app.use(cors());
+// CORS — lock to ALLOWED_ORIGINS in production; fall back to permissive in dev
+const _allowedOrigins = (process.env.ALLOWED_ORIGINS ?? '').split(',').map(s => s.trim()).filter(Boolean);
+app.use(cors({
+  origin: _allowedOrigins.length
+    ? (origin, cb) => (!origin || _allowedOrigins.includes(origin) ? cb(null, true) : cb(new Error('CORS: origin not allowed')))
+    : true,
+  credentials: true,
+}));
 // Capture raw body for webhook signature verification BEFORE json parsing
 app.use((req, _res, next) => {
   if (req.path === '/webhooks/receive') {
@@ -374,10 +381,12 @@ app.post('/admin/treasury/reconcile', adminKeyCheck, async (_req, res) => {
 });
 
 // ── B2C auth (public — register / login / refresh / logout) ───────────────
-app.use('/auth', authRouter);
+// authLimiter: 10 attempts per 15 min per IP — brute-force protection
+app.use('/auth', authLimiter, authRouter);
 
 // ── B2C user routes (JWT protected) ───────────────────────────────────────
-app.use('/me', requireUser, meRouter);
+// userLimiter: 60 req/min per JWT sub — applied to all /me routes
+app.use('/me', requireUser, userLimiter, meRouter);
 
 // ── B2B protected routes (API key) ────────────────────────────────────────
 app.use(requireApiKey);

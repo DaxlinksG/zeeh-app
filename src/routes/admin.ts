@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { createApiKey, listApiKeys, revokeApiKey, getApiKeyById } from '../lib/keyStore';
 import { creditBalance, getAllBalances, getTransactions, scanAllTransactions, getSwapRevenueSummary } from '../lib/ledger';
 import { listPendingDeposits, assignDeposit, ignoreDeposit, getDeposit } from '../lib/deposits';
-import { listUsers, listPendingKyc, getKyc, updateKycStatus, getUserById } from '../lib/userStore';
+import { listUsers, listPendingKyc, getKyc, updateKycStatus, getUserById, setUserActive } from '../lib/userStore';
 import { listDepositInstructions, getDepositInstruction, putDepositInstruction, deleteDepositInstruction } from '../lib/depositConfig';
 import { freezeCurrency, unfreezeCurrency, listFrozen, isFrozen } from '../lib/circuitBreaker';
 import { gtp } from '../lib/gtpClient';
@@ -209,6 +209,28 @@ router.post('/users/:user_id/kyc/reject', async (req: Request, res: Response, ne
     }).catch(() => {});
 
     res.json({ success: true, message: `KYC rejected for ${req.params.user_id}` });
+  } catch (err) { next(err); }
+});
+
+// POST /admin/users/:user_id/suspend — disable account (blocks login + all transactions)
+router.post('/users/:user_id/suspend', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const user = await getUserById(req.params.user_id);
+    if (!user) { res.status(404).json({ success: false, message: 'User not found' }); return; }
+    if (!user.is_active) { res.status(400).json({ success: false, message: 'User is already suspended' }); return; }
+    await setUserActive(req.params.user_id, false);
+    res.json({ success: true, message: `Account ${req.params.user_id} suspended` });
+  } catch (err) { next(err); }
+});
+
+// POST /admin/users/:user_id/unsuspend — re-enable account
+router.post('/users/:user_id/unsuspend', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const user = await getUserById(req.params.user_id);
+    if (!user) { res.status(404).json({ success: false, message: 'User not found' }); return; }
+    if (user.is_active) { res.status(400).json({ success: false, message: 'User is already active' }); return; }
+    await setUserActive(req.params.user_id, true);
+    res.json({ success: true, message: `Account ${req.params.user_id} reactivated` });
   } catch (err) { next(err); }
 });
 

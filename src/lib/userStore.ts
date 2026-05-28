@@ -43,6 +43,9 @@ export interface User {
   otp_hash?:      string;
   otp_expires?:   number;
   otp_attempts?:  number;
+  // Password reset token (stored hashed, 30-min expiry)
+  reset_token_hash?:    string;
+  reset_token_expires?: number;
 }
 
 export interface KycRecord {
@@ -276,6 +279,59 @@ export async function verifyOtp(userId: string, otp: string): Promise<'ok' | 'ex
   }));
 
   return 'ok';
+}
+
+// ── Password reset ─────────────────────────────────────────────────────────
+// Uses a 32-byte random hex token, SHA-256 hashed before storage.
+// Valid for 30 minutes. One active token per user at a time.
+
+function hashToken(token: string): string {
+  return crypto.createHash('sha256').update(token).digest('hex');
+}
+
+export async function storePasswordResetToken(userId: string, token: string): Promise<void> {
+  const expiresAt = Math.floor(Date.now() / 1000) + 30 * 60; // 30 min
+  await db.send(new UpdateCommand({
+    TableName: USERS_TABLE,
+    Key: { user_id: userId },
+    UpdateExpression: 'SET reset_token_hash = :h, reset_token_expires = :e',
+    ExpressionAttributeValues: { ':h': hashToken(token), ':e': expiresAt },
+  }));
+}
+
+export async function verifyPasswordResetToken(
+  userId: string,
+  token: string,
+): Promise<'ok' | 'expired' | 'invalid'> {
+  const user = await getUserById(userId);
+  if (!user?.reset_token_hash) return 'expired';
+  if (!user.reset_token_expires || Math.floor(Date.now() / 1000) > user.reset_token_expires) return 'expired';
+
+  const match = crypto.timingSafeEqual(
+    Buffer.from(user.reset_token_hash, 'hex'),
+    Buffer.from(hashToken(token), 'hex'),
+  );
+  return match ? 'ok' : 'invalid';
+}
+
+export async function resetPassword(userId: string, newPassword: string): Promise<void> {
+  const hash = await bcrypt.hash(newPassword, 12);
+  await db.send(new UpdateCommand({
+    TableName: USERS_TABLE,
+    Key: { user_id: userId },
+    UpdateExpression: 'SET password_hash = :h REMOVE reset_token_hash, reset_token_expires',
+    ExpressionAttributeValues: { ':h': hash },
+  }));
+}
+
+// ── Admin: suspend / unsuspend user ────────────────────────────────────────
+export async function setUserActive(userId: string, active: boolean): Promise<void> {
+  await db.send(new UpdateCommand({
+    TableName: USERS_TABLE,
+    Key: { user_id: userId },
+    UpdateExpression: 'SET is_active = :a',
+    ExpressionAttributeValues: { ':a': active },
+  }));
 }
 
 // ── List pending KYC submissions (admin) ───────────────────────────────────

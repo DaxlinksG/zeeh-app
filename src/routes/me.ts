@@ -29,7 +29,8 @@ import {
 import { gtp } from '../lib/gtpClient';
 import { buildQuote, calcConversion } from '../lib/spreadEngine';
 import { listDepositInstructions } from '../lib/depositConfig';
-import { requireKyc } from '../middleware/userAuth';
+import { requireKyc, requireEmailVerified } from '../middleware/userAuth';
+import { userTransferLimiter } from '../middleware/rateLimiter';
 import { auditLog } from '../middleware/logger';
 import {
   sendKycSubmitted, sendAdminKycAlert,
@@ -291,7 +292,7 @@ const sendSchema = z.object({
   note:            z.string().max(255).optional(),
 });
 
-router.post('/send', async (req: Request, res: Response, next: NextFunction) => {
+router.post('/send', requireEmailVerified, userTransferLimiter, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const parsed = sendSchema.safeParse(req.body);
     if (!parsed.success) {
@@ -374,7 +375,7 @@ const transferSchema = z.object({
   recipient_uid:    z.string().optional(),
 });
 
-router.post('/transfer', requireKyc, async (req: Request, res: Response, next: NextFunction) => {
+router.post('/transfer', requireEmailVerified, requireKyc, userTransferLimiter, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const parsed = transferSchema.safeParse(req.body);
     if (!parsed.success) {
@@ -400,10 +401,12 @@ router.post('/transfer', requireKyc, async (req: Request, res: Response, next: N
       throw err;
     }
 
-    // Forward to GTP with Zeeh's B2B API key
+    // Forward to GTP — strip internal-only fields before sending upstream
+    // recipient_uid is used internally for P2P routing and must not be forwarded to Expedier
+    const { recipient_uid: _internalUid, ...gtpPayload } = parsed.data;
     let gtpData;
     try {
-      const { data } = await gtp.post('/transfers', parsed.data);
+      const { data } = await gtp.post('/transfers', gtpPayload);
       gtpData = data;
     } catch (gtpErr) {
       await refundBalance(userId, currency, amount, client_reference, 'GTP transfer failed').catch(() => {});
@@ -433,7 +436,7 @@ const swapSchema = z.object({
   reference:     z.string().max(100).optional(),
 });
 
-router.post('/swap', requireKyc, async (req: Request, res: Response, next: NextFunction) => {
+router.post('/swap', requireEmailVerified, requireKyc, userTransferLimiter, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const parsed = swapSchema.safeParse(req.body);
     if (!parsed.success) {

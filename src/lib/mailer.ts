@@ -179,6 +179,18 @@ export async function sendOtpResend(to: string, firstName: string, otp: string):
   await send(to, 'New Zeeh Africa verification code', html);
 }
 
+// ── B2C: Password reset ───────────────────────────────────────────────────────
+
+export async function sendPasswordReset(to: string, firstName: string, resetUrl: string): Promise<void> {
+  const html = baseTemplate('Reset your password', `
+    ${h1('Reset your password')}
+    ${p(`Hi ${firstName}, we received a request to reset your Zeeh Africa password.`)}
+    ${cta('Reset Password', resetUrl)}
+    ${muted('This link expires in 30 minutes. If you did not request a password reset, you can safely ignore this email — your password has not changed.')}
+  `);
+  await send(to, 'Reset your Zeeh Africa password', html);
+}
+
 // ── B2C: KYC submitted ───────────────────────────────────────────────────────
 
 export async function sendKycSubmitted(to: string, firstName: string): Promise<void> {

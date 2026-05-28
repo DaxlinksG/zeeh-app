@@ -9,7 +9,7 @@
 
 import { Router, Request, Response, NextFunction } from 'express';
 import { z } from 'zod';
-import { createUser, getUserByEmail, getUserById, verifyPassword, touchLastLogin, generateOtp, storeOtp, verifyOtp } from '../lib/userStore';
+import { createUser, getUserByEmail, getUserById, verifyPassword, touchLastLogin, generateOtp, storeOtp, verifyOtp, storePasswordResetToken, verifyPasswordResetToken, resetPassword } from '../lib/userStore';
 import {
   signAccessToken,
   signRefreshToken,
@@ -17,7 +17,7 @@ import {
   revokeRefreshToken,
   decodeRefreshJti,
 } from '../lib/jwtHelper';
-import { sendWelcomeOtp, sendOtpResend, sendEmailVerified } from '../lib/mailer';
+import { sendWelcomeOtp, sendOtpResend, sendEmailVerified, sendPasswordReset } from '../lib/mailer';
 import { sendOtpSms } from '../lib/sms';
 
 const router = Router();
@@ -262,6 +262,61 @@ router.post('/resend-otp', async (req: Request, res: Response, next: NextFunctio
   } catch (err) {
     next(err);
   }
+});
+
+// ── Forgot Password ────────────────────────────────────────────────────────
+// Always returns 200 to prevent user enumeration — don't reveal if the email exists.
+router.post('/forgot-password', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const email = z.string().email().safeParse(req.body?.email);
+    if (!email.success) {
+      res.status(400).json({ success: false, message: 'A valid email address is required' }); return;
+    }
+
+    const user = await getUserByEmail(email.data);
+    if (user && user.is_active) {
+      const token  = require('crypto').randomBytes(32).toString('hex');
+      const appUrl = process.env.APP_URL ?? 'https://app.zeehfi.ca';
+      const resetUrl = `${appUrl}/reset-password?uid=${encodeURIComponent(user.user_id)}&token=${encodeURIComponent(token)}`;
+
+      await storePasswordResetToken(user.user_id, token);
+      sendPasswordReset(user.email, user.first_name, resetUrl); // fire-and-forget
+    }
+
+    // Always same response — prevents leaking whether email is registered
+    res.json({ success: true, message: 'If that email is registered you will receive a reset link shortly.' });
+  } catch (err) { next(err); }
+});
+
+// ── Reset Password ─────────────────────────────────────────────────────────
+const resetPasswordSchema = z.object({
+  user_id:      z.string().min(1),
+  token:        z.string().min(1),
+  new_password: z.string().min(8, 'Password must be at least 8 characters'),
+});
+
+router.post('/reset-password', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const parsed = resetPasswordSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ success: false, message: 'Validation error', errors: parsed.error.flatten() }); return;
+    }
+    const { user_id, token, new_password } = parsed.data;
+
+    const result = await verifyPasswordResetToken(user_id, token);
+
+    if (result === 'expired') {
+      res.status(410).json({ success: false, message: 'Reset link has expired. Please request a new one.', code: 'TOKEN_EXPIRED' }); return;
+    }
+    if (result === 'invalid') {
+      res.status(400).json({ success: false, message: 'Invalid reset link.', code: 'TOKEN_INVALID' }); return;
+    }
+
+    // Revoke all existing refresh tokens by updating the password (all active sessions become invalid)
+    await resetPassword(user_id, new_password);
+
+    res.json({ success: true, message: 'Password updated. Please log in with your new password.' });
+  } catch (err) { next(err); }
 });
 
 // ── Logout ─────────────────────────────────────────────────────────────────
