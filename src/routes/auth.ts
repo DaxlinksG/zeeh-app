@@ -108,7 +108,7 @@ router.post('/login', async (req: Request, res: Response, next: NextFunction) =>
     }
 
     const [accessToken, refreshToken] = await Promise.all([
-      signAccessToken({ sub: user.user_id, email: user.email, kyc_status: user.kyc_status }),
+      signAccessToken({ sub: user.user_id, email: user.email, kyc_status: user.kyc_status, email_verified: user.email_verified ?? false }),
       signRefreshToken(user.user_id),
       touchLastLogin(user.user_id),
     ]);
@@ -119,11 +119,12 @@ router.post('/login', async (req: Request, res: Response, next: NextFunction) =>
         access_token:  accessToken,
         refresh_token: refreshToken,
         user: {
-          user_id:    user.user_id,
-          email:      user.email,
-          first_name: user.first_name,
-          last_name:  user.last_name,
-          kyc_status: user.kyc_status,
+          user_id:        user.user_id,
+          email:          user.email,
+          first_name:     user.first_name,
+          last_name:      user.last_name,
+          kyc_status:     user.kyc_status,
+          email_verified: user.email_verified ?? false,
         },
       },
     });
@@ -156,7 +157,7 @@ router.post('/refresh', async (req: Request, res: Response, next: NextFunction) 
     }
 
     const [accessToken, refreshToken] = await Promise.all([
-      signAccessToken({ sub: user.user_id, email: user.email, kyc_status: user.kyc_status }),
+      signAccessToken({ sub: user.user_id, email: user.email, kyc_status: user.kyc_status, email_verified: user.email_verified ?? false }),
       signRefreshToken(user.user_id),
     ]);
 
