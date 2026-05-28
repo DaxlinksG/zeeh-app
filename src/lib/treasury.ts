@@ -62,6 +62,16 @@ export interface FraudFlag {
   detected_at: string;
 }
 
+export interface HedgeResult {
+  currency:      string;    // the currency that had a shortfall
+  shortfall:     number;    // how much we were short
+  from_currency: string;    // source currency used to hedge
+  from_amount:   number;    // how much source currency was spent (or would be)
+  gtp_reference?: string;   // Expedier swap reference (only when status = 'executed')
+  status:        'executed' | 'skipped' | 'failed';
+  reason?:       string;    // why it was skipped or what error occurred
+}
+
 export interface TreasurySnapshot {
   snapshot_id:         string;
   timestamp:           string;
@@ -72,6 +82,7 @@ export interface TreasurySnapshot {
   overall_status:      'ok' | 'warning' | 'critical';
   total_accounts:      number;
   expedier_available:  boolean;
+  hedge_results?:      HedgeResult[];   // populated when AUTO_HEDGE_ENABLED=true
 }
 
 // ── Internal helpers ─────────────────────────────────────────────────────────
@@ -263,6 +274,86 @@ async function detectFraudPatterns(
   return flags;
 }
 
+// ── Auto-hedge ────────────────────────────────────────────────────────────────
+// Runs automatically after each reconciliation when AUTO_HEDGE_ENABLED=true.
+// For every currency in 'critical' shortfall it executes a GTP swap from the
+// configured source wallet to restore the Expedier balance.
+//
+// Safety rails:
+//   AUTO_HEDGE_MIN_SHORTFALL  — skip currencies with variance below this (default 1.00)
+//   AUTO_HEDGE_MAX_PER_RUN    — total source-currency spend cap per cycle (default 5000)
+//   Cannot hedge the source currency against itself.
+//
+// The swap is fire-and-forget from the reconciliation's perspective — the GTP
+// balance won't update immediately. The circuit breaker stays tripped until the
+// NEXT reconciliation confirms the position has recovered.
+export async function runAutoHedge(
+  positions:      CurrencyPosition[],
+  sourceCurrency: string,
+): Promise<HedgeResult[]> {
+  const minShortfall = parseFloat(process.env.AUTO_HEDGE_MIN_SHORTFALL ?? '1.00');
+  const maxPerRun    = parseFloat(process.env.AUTO_HEDGE_MAX_PER_RUN   ?? '5000');
+  let totalSpent = 0;
+  const results: HedgeResult[] = [];
+
+  // Only hedge currencies that are critical AND have a real Expedier position
+  const candidates = positions.filter(
+    p => p.status === 'critical' && p.expedier_balance !== 'N/A',
+  );
+
+  for (const pos of candidates) {
+    const variance = parseFloat(pos.variance);
+    const shortfall = Math.abs(variance);
+
+    if (shortfall < minShortfall) {
+      results.push({ currency: pos.currency, shortfall, from_currency: sourceCurrency, from_amount: 0, status: 'skipped', reason: `Below min threshold (${minShortfall})` });
+      continue;
+    }
+
+    if (pos.currency === sourceCurrency) {
+      results.push({ currency: pos.currency, shortfall, from_currency: sourceCurrency, from_amount: 0, status: 'skipped', reason: 'Source and target currency are the same' });
+      continue;
+    }
+
+    // Fetch rate: shortfall is in `pos.currency`; convert to source spend amount
+    // Rate query = "how much source do I get per 1 target?" → target/source rate
+    let rate: number | null = null;
+    try {
+      const { data } = await gtp.get(`/rates/${pos.currency}/${sourceCurrency}`);
+      rate = parseFloat(data.data?.buy_rate ?? '0') || null;
+    } catch { /* no rate — fall back to 1:1 */ }
+
+    const fromAmount = rate
+      ? parseFloat((shortfall * rate).toFixed(2))
+      : parseFloat(shortfall.toFixed(2));
+
+    if (totalSpent + fromAmount > maxPerRun) {
+      results.push({ currency: pos.currency, shortfall, from_currency: sourceCurrency, from_amount: fromAmount, status: 'skipped', reason: `Would exceed AUTO_HEDGE_MAX_PER_RUN (${maxPerRun} ${sourceCurrency})` });
+      continue;
+    }
+
+    try {
+      const { data: swapData } = await gtp.post('/swap', {
+        from_currency: sourceCurrency,
+        to_currency:   pos.currency,
+        amount:        fromAmount.toFixed(2),
+        reference:     `AUTHEDGE-${pos.currency}-${Date.now()}`,
+        metadata:      { type: 'auto_hedge', triggered_by: 'reconciliation' },
+      });
+      totalSpent += fromAmount;
+      const ref = String(swapData.data?.swap?.reference ?? swapData.data?.reference ?? '');
+      console.log(`🏦  Auto-hedge executed: ${sourceCurrency} ${fromAmount.toFixed(2)} → ${pos.currency} ${shortfall.toFixed(2)} shortfall covered (ref=${ref || 'n/a'})`);
+      results.push({ currency: pos.currency, shortfall, from_currency: sourceCurrency, from_amount: fromAmount, gtp_reference: ref || undefined, status: 'executed' });
+    } catch (err: unknown) {
+      const msg = (err as Error).message ?? 'GTP error';
+      console.error(`⚠️  Auto-hedge failed for ${pos.currency}:`, msg);
+      results.push({ currency: pos.currency, shortfall, from_currency: sourceCurrency, from_amount: fromAmount, status: 'failed', reason: msg });
+    }
+  }
+
+  return results;
+}
+
 // ── Main reconciliation function ─────────────────────────────────────────────
 
 export async function runReconciliation(triggeredBy: 'scheduled' | 'manual' = 'scheduled'): Promise<TreasurySnapshot> {
@@ -411,6 +502,31 @@ export async function runReconciliation(triggeredBy: 'scheduled' | 'manual' = 's
     console.log(`✅  Treasury OK  [${snapshot.timestamp}]  accounts=${ledgerData.total}  duration=${snapshot.duration_ms}ms`);
   }
 
+  // ── Auto-hedge shortfalls ───────────────────────────────────────────────────
+  // Fires after snapshot + circuit breakers are set so the recorded state is
+  // always the real observed state, not a post-hedge guess.
+  // The GTP swap settles asynchronously; the next reconciliation will confirm recovery.
+  if (process.env.AUTO_HEDGE_ENABLED === 'true') {
+    const sourceCurrency = (process.env.AUTO_HEDGE_SOURCE_CURRENCY ?? 'CAD').toUpperCase();
+    const criticalPositions = positions.filter(p => p.status === 'critical' && p.expedier_balance !== 'N/A');
+    if (criticalPositions.length > 0) {
+      console.log(`🏦  Auto-hedge triggered — ${criticalPositions.length} critical shortfall(s), source=${sourceCurrency}`);
+      runAutoHedge(criticalPositions, sourceCurrency).then(hedgeResults => {
+        const executed = hedgeResults.filter(r => r.status === 'executed').length;
+        const failed   = hedgeResults.filter(r => r.status === 'failed').length;
+        const skipped  = hedgeResults.filter(r => r.status === 'skipped').length;
+        console.log(`🏦  Auto-hedge complete: ${executed} executed, ${skipped} skipped, ${failed} failed`);
+        if (failed > 0) {
+          console.error(`⚠️  ${failed} auto-hedge swap(s) failed — check logs. Shortfalls will persist until manual intervention or next cycle.`);
+        }
+        // Persist hedge results into the snapshot for the admin dashboard
+        saveSnapshot({ ...snapshot, hedge_results: hedgeResults }).catch(() => {});
+      }).catch(err => {
+        console.error('⚠️  Auto-hedge run threw unexpectedly:', err);
+      });
+    }
+  }
+
   return snapshot;
 }
 
@@ -422,10 +538,11 @@ export async function saveSnapshot(snapshot: TreasurySnapshot): Promise<void> {
       TableName: SNAPSHOTS_TABLE,
       Item: {
         ...snapshot,
-        // Store as JSON string to avoid DynamoDB complexity with nested arrays
-        positions:   JSON.stringify(snapshot.positions),
-        fraud_flags: JSON.stringify(snapshot.fraud_flags),
-        ttl:         Math.floor(Date.now() / 1000) + 90 * 24 * 60 * 60, // 90-day retention
+        // Store arrays as JSON strings to avoid DynamoDB nested-type complexity
+        positions:     JSON.stringify(snapshot.positions),
+        fraud_flags:   JSON.stringify(snapshot.fraud_flags),
+        hedge_results: snapshot.hedge_results ? JSON.stringify(snapshot.hedge_results) : undefined,
+        ttl:           Math.floor(Date.now() / 1000) + 90 * 24 * 60 * 60, // 90-day retention
       },
     }));
   } catch (err) {
@@ -457,11 +574,15 @@ export async function getSnapshots(limit = 20): Promise<TreasurySnapshot[]> {
     return all
       .sort((a, b) => b.timestamp.localeCompare(a.timestamp))
       .slice(0, limit)
-      .map(item => ({
-        ...item,
-        positions:   JSON.parse(item.positions  ?? '[]') as CurrencyPosition[],
-        fraud_flags: JSON.parse(item.fraud_flags ?? '[]') as FraudFlag[],
-      }));
+      .map(item => {
+        const snap = item as TreasurySnapshot & { positions: string; fraud_flags: string; hedge_results?: string };
+        return {
+          ...snap,
+          positions:    JSON.parse(snap.positions   ?? '[]') as CurrencyPosition[],
+          fraud_flags:  JSON.parse(snap.fraud_flags  ?? '[]') as FraudFlag[],
+          hedge_results: snap.hedge_results ? JSON.parse(snap.hedge_results) as HedgeResult[] : undefined,
+        };
+      });
   } catch {
     return [];
   }

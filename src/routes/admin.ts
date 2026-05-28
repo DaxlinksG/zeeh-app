@@ -7,7 +7,7 @@ import { listUsers, listPendingKyc, getKyc, updateKycStatus, getUserById, setUse
 import { listDepositInstructions, getDepositInstruction, putDepositInstruction, deleteDepositInstruction } from '../lib/depositConfig';
 import { freezeCurrency, unfreezeCurrency, listFrozen, isFrozen } from '../lib/circuitBreaker';
 import { gtp } from '../lib/gtpClient';
-import { getLatestSnapshot } from '../lib/treasury';
+import { getLatestSnapshot, runAutoHedge } from '../lib/treasury';
 import {
   sendApiKeyCreated, sendApiKeyRevoked,
   sendKycApproved, sendKycRejected,
@@ -572,6 +572,45 @@ router.post('/treasury/hedge', async (req: Request, res: Response, next: NextFun
       gtp_error: body ?? null,
     }); return;
   }
+});
+
+// POST /admin/treasury/hedge/auto — immediately run the auto-hedge against the
+// latest snapshot without waiting for the next reconciliation cycle.
+// Optional body: { source_currency, dry_run }
+router.post('/treasury/hedge/auto', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const sourceCurrency = String(req.body?.source_currency ?? process.env.AUTO_HEDGE_SOURCE_CURRENCY ?? 'CAD').toUpperCase();
+    const dryRun         = Boolean(req.body?.dry_run ?? false);
+
+    const snap = await getLatestSnapshot();
+    if (!snap) {
+      res.status(400).json({ success: false, message: 'No treasury snapshot found. Run a reconciliation first.' }); return;
+    }
+
+    const criticalPositions = snap.positions.filter(p => p.status === 'critical' && p.expedier_balance !== 'N/A');
+    if (criticalPositions.length === 0) {
+      res.json({ success: true, message: 'No critical shortfalls in the latest snapshot — nothing to hedge.', data: { results: [] } }); return;
+    }
+
+    if (dryRun) {
+      res.json({
+        success: true,
+        dry_run: true,
+        message: `Dry run — ${criticalPositions.length} position(s) would be hedged`,
+        data: { critical_positions: criticalPositions.map(p => ({ currency: p.currency, variance: p.variance, status: p.status })) },
+      }); return;
+    }
+
+    const results = await runAutoHedge(criticalPositions, sourceCurrency);
+    const executed = results.filter(r => r.status === 'executed').length;
+    const failed   = results.filter(r => r.status === 'failed').length;
+
+    res.json({
+      success: failed === 0,
+      message: `Auto-hedge complete: ${executed} executed, ${failed} failed`,
+      data: { results },
+    });
+  } catch (err) { next(err); }
 });
 
 // GET /admin/treasury/hedge/preview/:currency — dry-run without body (quick check)
