@@ -20,6 +20,9 @@ import meRouter from './routes/me';
 import { requireUser } from './middleware/userAuth';
 import { createPendingDeposit } from './lib/deposits';
 import { runReconciliation, getSnapshots, getLatestSnapshot } from './lib/treasury';
+import { getVirtualAccountByReference, recordVirtualAccountCredit } from './lib/virtualAccountStore';
+import virtualAccountsRouter from './routes/virtualAccounts';
+import { creditBalance } from './lib/ledger';
 
 const app = express();
 
@@ -228,18 +231,57 @@ app.post('/webhooks/receive', async (req, res) => {
 
   // ── Auto-detect deposits: wallet.funded ───────────────────────────────────
   // When any wallet receives funds, GTP fires wallet.funded.
-  // We can't know which client sent the money, so we create a pending deposit
-  // record that an admin can assign to the correct client with one click.
+  // 1. Try to match reference to a virtual account → auto-credit + fire webhook
+  // 2. If no match, create a pending deposit for admin to assign manually.
   if (
     (eventType === 'wallet.funded' || eventType === 'wallet_funded') &&
     amount && parseFloat(amount) > 0 && currency
   ) {
-    try {
-      const deposit = await createPendingDeposit(eventType, currency, amount, ref || ts, event);
-      console.log(`💰  Pending deposit created: ${deposit.deposit_id}  (${currency} ${amount})`);
-    } catch (err) {
-      console.error('⚠️  Failed to create pending deposit:', err);
-      // Still return 200 so GTP doesn't retry indefinitely
+    let matchedVirtualAccount = false;
+
+    // ── 1. Virtual account matching ────────────────────────────────────────
+    // The sender must include the ZVA-XXXXXX reference code in the payment
+    // description. We extract every token and try each one.
+    if (ref) {
+      const tokens = ref.toUpperCase().split(/\s+|[,;|]/);
+      const zvaToken = tokens.find(t => /^ZVA-[0-9A-F]{6}$/.test(t));
+      if (zvaToken) {
+        try {
+          const va = await getVirtualAccountByReference(zvaToken);
+          if (va && va.status === 'active' && va.currency === currency) {
+            // Credit the B2B client's ledger
+            await creditBalance(
+              va.client_id,
+              currency,
+              amount,
+              zvaToken,
+              `Virtual account deposit — ${va.customer_name} (${va.customer_id})`,
+              { virtual_account_id: va.account_id, customer_id: va.customer_id },
+            );
+            // Update running total on the virtual account record
+            await recordVirtualAccountCredit(va.account_id, amount);
+
+            console.log(`🏦  Virtual account matched: ${zvaToken} → client=${va.client_id} customer=${va.customer_id} ${currency} ${amount}`);
+            matchedVirtualAccount = true;
+          } else if (va) {
+            console.warn(`⚠️  Virtual account ${zvaToken} found but inactive or currency mismatch (expected ${va.currency}, got ${currency})`);
+          }
+        } catch (err) {
+          console.error('⚠️  Virtual account credit failed:', err);
+          // Fall through to pending deposit so funds aren't lost
+        }
+      }
+    }
+
+    // ── 2. Unmatched deposit → pending queue for admin ─────────────────────
+    if (!matchedVirtualAccount) {
+      try {
+        const deposit = await createPendingDeposit(eventType, currency, amount, ref || ts, event);
+        console.log(`💰  Pending deposit created: ${deposit.deposit_id}  (${currency} ${amount})`);
+      } catch (err) {
+        console.error('⚠️  Failed to create pending deposit:', err);
+        // Still return 200 so GTP doesn't retry indefinitely
+      }
     }
   }
 
@@ -290,6 +332,7 @@ app.use('/api/wallets', walletsRouter);
 app.use('/api/balance', balanceRouter);
 app.use('/api/account', accountRouter);
 app.use('/api/webhooks', webhooksRouter);
+app.use('/api/virtual-accounts', virtualAccountsRouter);
 
 app.use(errorHandler);
 
