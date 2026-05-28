@@ -239,7 +239,7 @@ export default function Auth() {
             </form>
           ) : (
             <form onSubmit={handleRegister}>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '.8rem' }}>
+              <div className="grid-2">
                 <div className="form-group">
                   <label>First Name</label>
                   <input required value={reg.first_name} onChange={e => setReg(r => ({ ...r, first_name: e.target.value }))} placeholder="Jane" />
@@ -257,7 +257,7 @@ export default function Auth() {
                 <label>Password</label>
                 <input type="password" required value={reg.password} onChange={e => setReg(r => ({ ...r, password: e.target.value }))} placeholder="Min. 8 characters" />
               </div>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '.8rem' }}>
+              <div className="grid-2">
                 <div className="form-group">
                   <label>Phone</label>
                   <input required value={reg.phone} onChange={e => setReg(r => ({ ...r, phone: e.target.value }))} placeholder="+1 416 000 0000" />

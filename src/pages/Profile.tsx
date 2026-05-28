@@ -109,7 +109,7 @@ export default function Profile() {
 
       {!kycTab ? (
         <form className="card" onSubmit={saveProfile}>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '.8rem' }}>
+          <div className="grid-2">
             <div className="form-group">
               <label>First Name</label>
               <input value={profile.first_name} onChange={e => setProfile(p => ({ ...p, first_name: e.target.value }))} />
@@ -123,7 +123,7 @@ export default function Profile() {
             <label>Email</label>
             <input value={user?.email ?? ''} disabled style={{ opacity: .5 }} />
           </div>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '.8rem' }}>
+          <div className="grid-2">
             <div className="form-group">
               <label>Phone</label>
               <input value={profile.phone} onChange={e => setProfile(p => ({ ...p, phone: e.target.value }))} placeholder="+1 416..." />
@@ -156,7 +156,7 @@ export default function Profile() {
             </div>
           ) : (
             <>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '.8rem' }}>
+              <div className="grid-2">
                 <div className="form-group">
                   <label>Date of Birth</label>
                   <input type="date" required value={kyc.date_of_birth} onChange={e => setKyc(k => ({ ...k, date_of_birth: e.target.value }))} />
@@ -167,7 +167,7 @@ export default function Profile() {
                 </div>
               </div>
 
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '.8rem' }}>
+              <div className="grid-2">
                 <div className="form-group">
                   <label>ID Type</label>
                   <select value={kyc.id_type} onChange={e => setKyc(k => ({ ...k, id_type: e.target.value }))}>
@@ -185,7 +185,7 @@ export default function Profile() {
                 <label>Street</label>
                 <input required value={kyc.address.street} onChange={e => setKyc(k => ({ ...k, address: { ...k.address, street: e.target.value } }))} placeholder="123 Main St" />
               </div>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '.8rem' }}>
+              <div className="grid-2">
                 <div className="form-group">
                   <label>City</label>
                   <input required value={kyc.address.city} onChange={e => setKyc(k => ({ ...k, address: { ...k.address, city: e.target.value } }))} />

@@ -55,7 +55,7 @@ function EmailVerifyBanner() {
         background: 'rgba(108,99,255,.1)', border: '1px solid rgba(108,99,255,.35)',
         borderRadius: 'var(--radius)', padding: '1rem 1.2rem',
         marginBottom: '1.5rem', display: 'flex', alignItems: 'center',
-        justifyContent: 'space-between', gap: '1rem',
+        justifyContent: 'space-between', gap: '1rem', flexWrap: 'wrap',
       }}>
         <div>
           <strong style={{ color: 'var(--accent)' }}>📧 Verify your email</strong>
@@ -173,7 +173,7 @@ export default function Dashboard() {
           background: 'rgba(255,165,0,.08)', border: '1px solid rgba(255,165,0,.3)',
           borderRadius: 'var(--radius)', padding: '1rem 1.2rem',
           marginBottom: '1.5rem', display: 'flex', alignItems: 'center',
-          justifyContent: 'space-between', gap: '1rem',
+          justifyContent: 'space-between', gap: '1rem', flexWrap: 'wrap',
         }}>
           <div>
             <strong style={{ color: 'var(--warn)' }}>
@@ -194,7 +194,7 @@ export default function Dashboard() {
       )}
 
       {/* Quick actions */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '.8rem', marginBottom: '2rem' }}>
+      <div className="grid-4" style={{ marginBottom: '2rem' }}>
         {quickActions.map(a => (
           <button
             key={a.label}

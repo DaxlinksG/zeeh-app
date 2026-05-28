@@ -2,12 +2,12 @@ import { NavLink, useNavigate } from 'react-router-dom';
 import { useAuthStore } from '../store/authStore';
 
 const navItems = [
-  { to: '/dashboard',    label: 'Home',         icon: '⊞' },
-  { to: '/send',         label: 'Send',         icon: '↗' },
-  { to: '/pay',          label: 'Pay',          icon: '🏦' },
-  { to: '/exchange',     label: 'Exchange',     icon: '⇄' },
-  { to: '/deposit',      label: 'Deposit',      icon: '↙' },
-  { to: '/transactions', label: 'History',      icon: '≡' },
+  { to: '/dashboard',    label: 'Home',     icon: '⊞' },
+  { to: '/send',         label: 'Send',     icon: '↗' },
+  { to: '/pay',          label: 'Pay',      icon: '🏦' },
+  { to: '/exchange',     label: 'Exchange', icon: '⇄' },
+  { to: '/deposit',      label: 'Deposit',  icon: '↙' },
+  { to: '/transactions', label: 'History',  icon: '≡' },
 ];
 
 export default function Layout({ children }: { children: React.ReactNode }) {
@@ -20,17 +20,24 @@ export default function Layout({ children }: { children: React.ReactNode }) {
   }
 
   return (
-    <div style={{ display: 'flex', height: '100vh', overflow: 'hidden' }}>
-      {/* Sidebar */}
-      <aside style={{
-        width: 220,
-        background: 'var(--surface)',
-        borderRight: '1px solid var(--border)',
-        display: 'flex',
-        flexDirection: 'column',
-        padding: '1.5rem 0',
-        flexShrink: 0,
-      }}>
+    <div className="app-layout">
+
+      {/* ── Mobile top header (hidden on desktop) ── */}
+      <header className="app-mobile-header">
+        <div style={{ fontSize: '1rem', fontWeight: 700 }}>
+          Zeeh <span style={{ color: 'var(--accent2)' }}>Africa</span>
+        </div>
+        <NavLink
+          to="/profile"
+          style={{ display: 'flex', alignItems: 'center', gap: '.4rem', color: 'var(--muted)', fontSize: '.82rem', textDecoration: 'none' }}
+        >
+          <span>👤</span>
+          <span>{user?.first_name}</span>
+        </NavLink>
+      </header>
+
+      {/* ── Desktop sidebar (hidden on mobile) ── */}
+      <aside className="app-sidebar">
         {/* Brand */}
         <div style={{ padding: '0 1.4rem 1.5rem', borderBottom: '1px solid var(--border)' }}>
           <div style={{ fontSize: '1.1rem', fontWeight: 700 }}>
@@ -47,18 +54,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
             <NavLink
               key={item.to}
               to={item.to}
-              style={({ isActive }) => ({
-                display: 'flex',
-                alignItems: 'center',
-                gap: '.7rem',
-                padding: '.6rem .8rem',
-                borderRadius: 8,
-                fontSize: '.9rem',
-                fontWeight: isActive ? 600 : 400,
-                color: isActive ? 'var(--text)' : 'var(--muted)',
-                background: isActive ? 'rgba(108,99,255,.12)' : 'transparent',
-                transition: 'all .15s',
-              })}
+              className={({ isActive }) => `app-nav-item${isActive ? ' active' : ''}`}
             >
               <span style={{ fontSize: '1rem' }}>{item.icon}</span>
               {item.label}
@@ -68,32 +64,37 @@ export default function Layout({ children }: { children: React.ReactNode }) {
 
         {/* Footer */}
         <div style={{ padding: '.8rem', borderTop: '1px solid var(--border)' }}>
-          <NavLink to="/profile" style={({ isActive }) => ({
-            display: 'flex', alignItems: 'center', gap: '.7rem',
-            padding: '.6rem .8rem', borderRadius: 8, fontSize: '.9rem',
-            color: isActive ? 'var(--text)' : 'var(--muted)',
-            background: isActive ? 'rgba(108,99,255,.12)' : 'transparent',
-          })}>
+          <NavLink
+            to="/profile"
+            className={({ isActive }) => `app-nav-item${isActive ? ' active' : ''}`}
+          >
             <span>👤</span> Profile
           </NavLink>
-          <button
-            onClick={handleLogout}
-            style={{
-              width: '100%', display: 'flex', alignItems: 'center', gap: '.7rem',
-              padding: '.6rem .8rem', borderRadius: 8, fontSize: '.9rem',
-              color: 'var(--muted)', background: 'transparent', border: 'none',
-              cursor: 'pointer', marginTop: '.2rem',
-            }}
-          >
+          <button className="app-nav-btn" onClick={handleLogout}>
             <span>⏻</span> Sign out
           </button>
         </div>
       </aside>
 
-      {/* Main content */}
-      <main style={{ flex: 1, overflowY: 'auto', padding: '2rem' }}>
+      {/* ── Main content ── */}
+      <main className="app-main">
         {children}
       </main>
+
+      {/* ── Mobile bottom nav (hidden on desktop) ── */}
+      <nav className="app-bottom-nav">
+        {navItems.map(item => (
+          <NavLink
+            key={item.to}
+            to={item.to}
+            className={({ isActive }) => isActive ? 'active' : ''}
+          >
+            <span className="bnav-icon">{item.icon}</span>
+            <span>{item.label}</span>
+          </NavLink>
+        ))}
+      </nav>
+
     </div>
   );
 }

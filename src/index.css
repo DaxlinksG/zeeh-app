@@ -178,3 +178,163 @@ label {
 ::-webkit-scrollbar { width: 5px; height: 5px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+
+/* ════════════════════════════════════════════════════════
+   LAYOUT CLASSES (consumed by Layout.tsx)
+   ════════════════════════════════════════════════════════ */
+
+.app-layout {
+  display: flex;
+  height: 100vh;
+  overflow: hidden;
+}
+
+.app-sidebar {
+  width: 220px;
+  background: var(--surface);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  padding: 1.5rem 0;
+  flex-shrink: 0;
+}
+
+.app-main {
+  flex: 1;
+  overflow-y: auto;
+  padding: 2rem;
+}
+
+/* Sidebar nav links */
+.app-nav-item {
+  display: flex;
+  align-items: center;
+  gap: .7rem;
+  padding: .6rem .8rem;
+  border-radius: 8px;
+  font-size: .9rem;
+  font-weight: 400;
+  color: var(--muted);
+  background: transparent;
+  text-decoration: none;
+  transition: color .15s, background .15s;
+}
+.app-nav-item.active {
+  font-weight: 600;
+  color: var(--text);
+  background: rgba(108,99,255,.12);
+}
+.app-nav-item:hover:not(.active) {
+  color: var(--text);
+  background: rgba(108,99,255,.06);
+}
+
+.app-nav-btn {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: .7rem;
+  padding: .6rem .8rem;
+  border-radius: 8px;
+  font-size: .9rem;
+  color: var(--muted);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  margin-top: .2rem;
+  font-family: inherit;
+  transition: color .15s;
+}
+.app-nav-btn:hover { color: var(--text); }
+
+/* Mobile top header — hidden on desktop */
+.app-mobile-header { display: none; }
+
+/* Mobile bottom nav — hidden on desktop */
+.app-bottom-nav { display: none; }
+
+/* ── Responsive grid helpers ── */
+.grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: .8rem; }
+.grid-4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: .8rem; }
+
+/* ════════════════════════════════════════════════════════
+   MOBILE BREAKPOINT (≤ 767px)
+   ════════════════════════════════════════════════════════ */
+@media (max-width: 767px) {
+
+  /* Allow page to scroll naturally */
+  html, body, #root { height: auto; min-height: 100vh; }
+
+  /* Layout shell: block flow, page scrolls */
+  .app-layout { display: block; height: auto; overflow: visible; }
+
+  /* Hide desktop sidebar */
+  .app-sidebar { display: none; }
+
+  /* Main: full width, padded for fixed header + bottom nav */
+  .app-main {
+    flex: none;
+    height: auto;
+    overflow-y: visible;
+    padding: 1.2rem 1rem 5.5rem;
+    padding-top: calc(56px + 1.2rem);
+  }
+
+  /* Fixed mobile top header */
+  .app-mobile-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    position: fixed;
+    top: 0; left: 0; right: 0;
+    height: 56px;
+    padding: 0 1.2rem;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    z-index: 200;
+  }
+
+  /* Fixed mobile bottom nav */
+  .app-bottom-nav {
+    display: flex;
+    position: fixed;
+    bottom: 0; left: 0; right: 0;
+    height: 60px;
+    background: var(--surface);
+    border-top: 1px solid var(--border);
+    z-index: 200;
+  }
+  .app-bottom-nav a,
+  .app-bottom-nav button {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 2px;
+    font-size: .6rem;
+    font-weight: 500;
+    color: var(--muted);
+    background: transparent;
+    border: none;
+    cursor: pointer;
+    padding: 0;
+    text-decoration: none;
+    font-family: inherit;
+    transition: color .15s;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .app-bottom-nav a.active { color: var(--accent); }
+  .app-bottom-nav .bnav-icon { font-size: 1.15rem; line-height: 1; }
+
+  /* Toast: raise above bottom nav */
+  #toast-root { bottom: 4.5rem; right: .8rem; left: .8rem; }
+  .toast { max-width: 100%; width: 100%; }
+
+  /* Responsive grids */
+  .grid-2 { grid-template-columns: 1fr; }
+  .grid-4 { grid-template-columns: 1fr 1fr; }
+
+  /* Card: tighter padding on small screens */
+  .card { padding: 1.1rem; }
+}
