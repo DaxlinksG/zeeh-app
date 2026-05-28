@@ -459,33 +459,19 @@ router.post('/treasury/hedge', async (req: Request, res: Response, next: NextFun
       hedgeAmount = Math.abs(variance);
     }
 
-    // 2. Get Zeeh's GTP wallets to find the wallet IDs
-    let wallets: Array<Record<string, unknown>> = [];
-    try {
-      const { data } = await gtp.get('/wallets');
-      wallets = (data.data?.wallets ?? data.data ?? []) as typeof wallets;
-    } catch {
-      res.status(502).json({ success: false, message: 'Could not fetch wallets from Expedier. Check GTP credentials.' }); return;
-    }
-
-    function findWalletId(currency: string): string | null {
-      const w = wallets.find(w => {
-        const cur = typeof w.currency === 'object' && w.currency !== null
-          ? String((w.currency as Record<string, unknown>).code ?? '').toUpperCase()
-          : String(w.currency ?? '').toUpperCase();
-        return cur === currency && (w.status === 'approved' || w.active);
-      });
-      return w ? String(w.wallet_id ?? w.id ?? '') : null;
-    }
-
-    const fromWalletId = findWalletId(source_currency);
-    const toWalletId   = findWalletId(target_currency);
-
-    if (!fromWalletId) {
-      res.status(400).json({ success: false, message: `No active ${source_currency} wallet found in your Expedier account.` }); return;
-    }
-    if (!toWalletId) {
-      res.status(400).json({ success: false, message: `No active ${target_currency} wallet found in your Expedier account. Contact Expedier to provision one.` }); return;
+    // 2. Verify both wallets exist and are active on GTP.
+    //    GTP identifies wallets by currency code (e.g. /wallets/CAD), not a numeric ID.
+    //    wallet_id in the list endpoint is null in sandbox; the swap API uses currency codes.
+    for (const cur of [source_currency, target_currency]) {
+      try {
+        const { data } = await gtp.get(`/wallets/${cur}`);
+        const w = data.data?.wallet as Record<string, unknown> | undefined;
+        if (!w || w.status !== 'approved') {
+          res.status(400).json({ success: false, message: `${cur} wallet is not approved on Expedier. Cannot hedge.` }); return;
+        }
+      } catch {
+        res.status(400).json({ success: false, message: `No ${cur} wallet found in your Expedier account.` }); return;
+      }
     }
 
     // 3. Get the rate — convert shortfall (in target_currency) to from_currency spend amount
@@ -507,8 +493,6 @@ router.post('/treasury/hedge', async (req: Request, res: Response, next: NextFun
         message:  `Dry run — no swap executed`,
         data: {
           would_swap: {
-            from_wallet_id:     fromWalletId,
-            to_wallet_id:       toWalletId,
             from_currency:      source_currency,
             to_currency:        target_currency,
             from_amount:        fromAmount.toFixed(2),
@@ -519,14 +503,12 @@ router.post('/treasury/hedge', async (req: Request, res: Response, next: NextFun
       }); return;
     }
 
-    // 4. Execute the hedge swap on GTP (Zeeh's B2B wallets, not a client wallet)
+    // 4. Execute the hedge swap on GTP (Zeeh's B2B wallets, identified by currency code)
     console.log(`🏦 Hedge attempt: ${source_currency} ${fromAmount.toFixed(2)} → ${target_currency} ${hedgeAmount.toFixed(2)} (rate=${rate})`);
     const { data: swapData } = await gtp.post('/swap', {
-      from_wallet_id: fromWalletId,
-      to_wallet_id:   toWalletId,
-      amount:         fromAmount.toFixed(2),
       from_currency:  source_currency,
       to_currency:    target_currency,
+      amount:         fromAmount.toFixed(2),
       reference:      `HEDGE-${target_currency}-${Date.now()}`,
       metadata:       { type: 'treasury_hedge', triggered_by: 'admin' },
     });
@@ -545,21 +527,28 @@ router.post('/treasury/hedge', async (req: Request, res: Response, next: NextFun
       },
     });
   } catch (err: unknown) {
-    // Surface GTP errors cleanly instead of returning a bare 500
-    const axiosErr = err as { response?: { data?: unknown; status?: number }; message?: string };
-    if (axiosErr.response) {
-      const status = axiosErr.response.status ?? 502;
-      const body   = axiosErr.response.data;
-      console.error(`🏦 Hedge GTP error ${status}:`, JSON.stringify(body));
-      res.status(status >= 500 ? 502 : status).json({
-        success:   false,
-        message:   `Expedier returned ${status}. See gtp_error for details.`,
-        gtp_error: body ?? null,
+    // gtpClient interceptor transforms all GTP errors into: { status, upstream, message }
+    const gtpErr = err as { status?: number; upstream?: unknown; message?: string };
+    const status  = gtpErr.status ?? 502;
+    const body    = gtpErr.upstream;
+
+    // GTP sandbox /swap returns a bare HTML 500 — detect and give a clear message
+    const isHtml = typeof body === 'string' && (body as string).trimStart().startsWith('<');
+    if (isHtml || (status === 500 && !body)) {
+      console.error('🏦 Hedge: GTP swap endpoint returned HTML/empty 500 — sandbox may not support swaps');
+      res.status(502).json({
+        success: false,
+        message: 'Expedier\'s swap endpoint is not available in sandbox mode. The hedge will work in production. To clear the shortfall in sandbox, ask Expedier support to top up your USD wallet directly.',
+        gtp_status: status,
       }); return;
     }
-    // Network/timeout error — no response at all
-    console.error('🏦 Hedge network error:', axiosErr.message);
-    res.status(502).json({ success: false, message: `Could not reach Expedier: ${axiosErr.message ?? 'network error'}` }); return;
+
+    console.error(`🏦 Hedge error ${status}:`, JSON.stringify(body ?? gtpErr.message));
+    res.status(status >= 500 ? 502 : status).json({
+      success:   false,
+      message:   gtpErr.message ?? 'Expedier error',
+      gtp_error: body ?? null,
+    }); return;
   }
 });
 
