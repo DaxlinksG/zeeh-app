@@ -9,15 +9,24 @@ const navItems = [
   { to: '/transactions', label: 'History',  icon: '≡' },
 ];
 
-// Sidebar-only items (Pay and Beneficiaries shown on desktop but not crammed into mobile bottom nav)
+// These appear in the desktop sidebar but are not crammed into the 5-item mobile bottom nav
 const sidebarExtra = [
-  { to: '/pay',          label: 'Pay',         icon: '🏦' },
-  { to: '/beneficiaries',label: 'Beneficiaries', icon: '👥' },
+  { to: '/pay',           label: 'Pay',          icon: '🏦' },
+  { to: '/beneficiaries', label: 'Beneficiaries', icon: '👥' },
 ];
+
+const BRAND_GRADIENT = 'linear-gradient(90deg, #a78bfa, #10d9b2)';
+const TEXT_GRADIENT: React.CSSProperties = {
+  background: BRAND_GRADIENT,
+  WebkitBackgroundClip: 'text',
+  WebkitTextFillColor: 'transparent',
+  backgroundClip: 'text',
+};
 
 export default function Layout({ children }: { children: React.ReactNode }) {
   const { user, logout } = useAuthStore();
   const navigate = useNavigate();
+  const initials = ((user?.first_name?.[0] ?? '') + (user?.last_name?.[0] ?? '')).toUpperCase();
 
   function handleLogout() {
     logout();
@@ -27,66 +36,81 @@ export default function Layout({ children }: { children: React.ReactNode }) {
   return (
     <div className="app-layout">
 
-      {/* ── Mobile top header (hidden on desktop) ── */}
+      {/* ── Mobile top header ── */}
       <header className="app-mobile-header">
-        <div style={{ fontSize: '1rem', fontWeight: 700 }}>
-          Zeeh <span style={{ color: 'var(--accent2)' }}>Africa</span>
+        <div style={{ fontSize: '1.05rem', fontWeight: 700, ...TEXT_GRADIENT }}>
+          Zeeh Africa
         </div>
-        <NavLink
-          to="/profile"
-          style={{ display: 'flex', alignItems: 'center', gap: '.4rem', color: 'var(--muted)', fontSize: '.82rem', textDecoration: 'none' }}
-        >
-          <span>👤</span>
-          <span>{user?.first_name}</span>
+        <NavLink to="/profile" style={{ textDecoration: 'none' }}>
+          <div style={{
+            width: 34, height: 34, borderRadius: '50%',
+            background: BRAND_GRADIENT,
+            display: 'grid', placeItems: 'center',
+            fontSize: '.78rem', fontWeight: 700, color: '#fff',
+          }}>
+            {initials || '👤'}
+          </div>
         </NavLink>
       </header>
 
-      {/* ── Desktop sidebar (hidden on mobile) ── */}
+      {/* ── Desktop sidebar ── */}
       <aside className="app-sidebar">
         {/* Brand */}
-        <div style={{ padding: '0 1.4rem 1.5rem', borderBottom: '1px solid var(--border)' }}>
-          <div style={{ fontSize: '1.1rem', fontWeight: 700 }}>
-            Zeeh <span style={{ color: 'var(--accent2)' }}>Africa</span>
+        <div style={{ padding: '0 1.4rem 1.5rem', borderBottom: '1px solid rgba(255,255,255,0.07)' }}>
+          <div style={{ fontSize: '1.2rem', fontWeight: 700, marginBottom: '.3rem', ...TEXT_GRADIENT }}>
+            Zeeh Africa
           </div>
-          <div style={{ fontSize: '.75rem', color: 'var(--muted)', marginTop: '.15rem' }}>
-            {user?.first_name} {user?.last_name}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '.5rem' }}>
+            <div style={{
+              width: 24, height: 24, borderRadius: '50%',
+              background: BRAND_GRADIENT,
+              display: 'grid', placeItems: 'center',
+              fontSize: '.65rem', fontWeight: 700, color: '#fff', flexShrink: 0,
+            }}>
+              {initials || '?'}
+            </div>
+            <div style={{ fontSize: '.78rem', color: 'var(--muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {user?.first_name} {user?.last_name}
+            </div>
           </div>
         </div>
 
         {/* Nav */}
-        <nav style={{ flex: 1, padding: '1rem .8rem', display: 'flex', flexDirection: 'column', gap: '.2rem' }}>
+        <nav style={{ flex: 1, padding: '1rem .6rem', display: 'flex', flexDirection: 'column', gap: '.15rem' }}>
           {[...navItems, ...sidebarExtra].map(item => (
             <NavLink
               key={item.to}
               to={item.to}
               className={({ isActive }) => `app-nav-item${isActive ? ' active' : ''}`}
             >
-              <span style={{ fontSize: '1rem' }}>{item.icon}</span>
+              <span style={{ fontSize: '1rem', width: 20, textAlign: 'center' }}>{item.icon}</span>
               {item.label}
             </NavLink>
           ))}
         </nav>
 
         {/* Footer */}
-        <div style={{ padding: '.8rem', borderTop: '1px solid var(--border)' }}>
+        <div style={{ padding: '.6rem', borderTop: '1px solid rgba(255,255,255,0.07)' }}>
           <NavLink
             to="/profile"
             className={({ isActive }) => `app-nav-item${isActive ? ' active' : ''}`}
           >
-            <span>👤</span> Profile
+            <span style={{ fontSize: '1rem', width: 20, textAlign: 'center' }}>👤</span>
+            Profile
           </NavLink>
           <button className="app-nav-btn" onClick={handleLogout}>
-            <span>⏻</span> Sign out
+            <span style={{ fontSize: '1rem', width: 20, textAlign: 'center' }}>⏻</span>
+            Sign out
           </button>
         </div>
       </aside>
 
-      {/* ── Main content ── */}
+      {/* ── Main ── */}
       <main className="app-main">
         {children}
       </main>
 
-      {/* ── Mobile bottom nav (hidden on desktop) ── */}
+      {/* ── Mobile bottom nav ── */}
       <nav className="app-bottom-nav">
         {navItems.map(item => (
           <NavLink

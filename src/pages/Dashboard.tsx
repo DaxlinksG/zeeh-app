@@ -119,10 +119,10 @@ const CURRENCY_NAMES: Record<string, string> = {
 };
 
 const quickActions = [
-  { label: 'Send',     icon: '↗', path: '/send',         color: 'var(--accent)' },
-  { label: 'Pay',      icon: '🏦', path: '/pay',          color: 'var(--accent2)' },
-  { label: 'Exchange', icon: '⇄', path: '/exchange',     color: '#ff8c42' },
-  { label: 'Deposit',  icon: '↙', path: '/deposit',      color: '#00b4d8' },
+  { label: 'Send',     icon: '↗', path: '/send',     grad: 'linear-gradient(135deg,#7c3aed,#a78bfa)' },
+  { label: 'Pay',      icon: '🏦', path: '/pay',      grad: 'linear-gradient(135deg,#0ea5e9,#38bdf8)' },
+  { label: 'Exchange', icon: '⇄', path: '/exchange', grad: 'linear-gradient(135deg,#f59e0b,#f97316)' },
+  { label: 'Deposit',  icon: '↙', path: '/deposit',  grad: 'linear-gradient(135deg,#10b981,#34d399)' },
 ];
 
 export default function Dashboard() {
@@ -156,10 +156,16 @@ export default function Dashboard() {
     <div style={{ maxWidth: 800 }}>
       {/* Greeting */}
       <div style={{ marginBottom: '2rem' }}>
-        <h1 style={{ fontSize: '1.6rem', fontWeight: 700 }}>
-          Good {getGreeting()}, {user?.first_name} 👋
+        <div style={{ fontSize: '.72rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.1em', color: 'var(--muted)', marginBottom: '.4rem' }}>
+          Good {getGreeting()}
+        </div>
+        <h1 style={{
+          fontSize: '2rem', fontWeight: 700, letterSpacing: '-.02em',
+          background: 'linear-gradient(90deg, #eaeaff 0%, #a78bfa 60%, #10d9b2 100%)',
+          WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent', backgroundClip: 'text',
+        }}>
+          {user?.first_name} 👋
         </h1>
-        <p style={{ color: 'var(--muted)', marginTop: '.3rem' }}>Here's your account overview</p>
       </div>
 
       {/* Email verification banner */}
@@ -200,16 +206,39 @@ export default function Dashboard() {
             key={a.label}
             onClick={() => navigate(a.path)}
             style={{
-              background: 'var(--surface)', border: '1px solid var(--border)',
-              borderRadius: 'var(--radius)', padding: '1.1rem .8rem',
-              cursor: 'pointer', display: 'flex', flexDirection: 'column',
-              alignItems: 'center', gap: '.5rem', transition: 'border-color .15s',
+              background: 'var(--surface)',
+              border: '1px solid var(--border)',
+              borderRadius: 20,
+              padding: '1.2rem .6rem',
+              cursor: 'pointer',
+              display: 'flex', flexDirection: 'column',
+              alignItems: 'center', gap: '.6rem',
+              transition: 'all .18s cubic-bezier(.4,0,.2,1)',
             }}
-            onMouseEnter={e => (e.currentTarget.style.borderColor = a.color)}
-            onMouseLeave={e => (e.currentTarget.style.borderColor = 'var(--border)')}
+            onMouseEnter={e => {
+              e.currentTarget.style.background = 'rgba(255,255,255,0.08)';
+              e.currentTarget.style.transform = 'translateY(-3px)';
+              e.currentTarget.style.boxShadow = '0 8px 24px rgba(0,0,0,0.35)';
+            }}
+            onMouseLeave={e => {
+              e.currentTarget.style.background = 'var(--surface)';
+              e.currentTarget.style.transform = '';
+              e.currentTarget.style.boxShadow = '';
+            }}
           >
-            <span style={{ fontSize: '1.4rem', color: a.color }}>{a.icon}</span>
-            <span style={{ fontSize: '.82rem', fontWeight: 600, color: 'var(--text)' }}>{a.label}</span>
+            <div style={{
+              width: 48, height: 48,
+              borderRadius: 15,
+              background: a.grad,
+              display: 'grid', placeItems: 'center',
+              fontSize: '1.25rem',
+              boxShadow: '0 4px 16px rgba(0,0,0,0.35)',
+            }}>
+              {a.icon}
+            </div>
+            <span style={{ fontSize: '.78rem', fontWeight: 600, color: 'var(--text)', letterSpacing: '.01em' }}>
+              {a.label}
+            </span>
           </button>
         ))}
       </div>
@@ -229,22 +258,42 @@ export default function Dashboard() {
           <button className="btn btn-success btn-sm" onClick={() => navigate('/deposit')}>Make your first deposit</button>
         </div>
       ) : (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px,1fr))', gap: '.8rem' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(210px,1fr))', gap: '.8rem' }}>
           {balances.map(b => (
-            <div key={b.currency} className="card" style={{ cursor: 'pointer' }} onClick={() => navigate('/transactions')}>
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '.8rem' }}>
-                <span style={{ fontSize: '1.3rem' }}>{CURRENCY_FLAGS[b.currency] ?? '🌐'}</span>
-                <span className="badge badge-grey">{b.currency}</span>
+            <div
+              key={b.currency}
+              className="card"
+              style={{ cursor: 'pointer', transition: 'all .18s ease' }}
+              onClick={() => navigate('/transactions')}
+              onMouseEnter={e => { (e.currentTarget as HTMLElement).style.transform = 'translateY(-2px)'; (e.currentTarget as HTMLElement).style.borderColor = 'rgba(139,92,246,0.3)'; }}
+              onMouseLeave={e => { (e.currentTarget as HTMLElement).style.transform = ''; (e.currentTarget as HTMLElement).style.borderColor = ''; }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: '.7rem', marginBottom: '1rem' }}>
+                <div style={{
+                  width: 40, height: 40, borderRadius: 12,
+                  background: 'rgba(255,255,255,0.08)',
+                  display: 'grid', placeItems: 'center',
+                  fontSize: '1.3rem', flexShrink: 0,
+                }}>
+                  {CURRENCY_FLAGS[b.currency] ?? '🌐'}
+                </div>
+                <div>
+                  <div style={{ fontWeight: 700, fontSize: '.92rem' }}>{b.currency}</div>
+                  <div style={{ fontSize: '.72rem', color: 'var(--muted)' }}>{CURRENCY_NAMES[b.currency] ?? b.currency}</div>
+                </div>
               </div>
-              <div style={{ fontSize: '1.6rem', fontWeight: 700, marginBottom: '.15rem' }}>
-                {fmt(b.available)} <span style={{ fontSize: '1rem', color: 'var(--muted)' }}>{b.currency}</span>
+              <div style={{ fontSize: '1.65rem', fontWeight: 700, letterSpacing: '-.02em', marginBottom: '.1rem' }}>
+                {fmt(b.available)}
               </div>
-              <div style={{ fontSize: '.78rem', color: 'var(--muted)' }}>
-                {CURRENCY_NAMES[b.currency] ?? b.currency}
-              </div>
+              <div style={{ fontSize: '.72rem', color: 'var(--muted)' }}>Available balance</div>
               {parseFloat(b.balance) !== parseFloat(b.available) && (
-                <div style={{ fontSize: '.75rem', color: 'var(--warn)', marginTop: '.4rem' }}>
-                  {fmt(b.balance)} total (some reserved)
+                <div style={{
+                  marginTop: '.6rem', padding: '.35rem .7rem',
+                  background: 'rgba(245,158,11,.1)',
+                  borderRadius: 8, fontSize: '.72rem',
+                  color: 'var(--warn)',
+                }}>
+                  {fmt(b.balance)} total · some reserved
                 </div>
               )}
             </div>
