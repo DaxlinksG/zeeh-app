@@ -60,6 +60,36 @@ function AndroidBackHandler() {
   return null;
 }
 
+/** Checks session age on mount and every time the app comes to foreground.
+ *  Logs the user out after 24 hours automatically. */
+function SessionGuard() {
+  const { logout, isSessionExpired, user } = useAuthStore();
+
+  useEffect(() => {
+    if (!user) return;
+    if (isSessionExpired()) { logout(); return; }
+
+    // Set a timer that fires exactly when the session expires
+    const { loginAt } = useAuthStore.getState();
+    const remaining = loginAt ? (loginAt + 24 * 60 * 60 * 1000) - Date.now() : 0;
+    if (remaining <= 0) { logout(); return; }
+    const timer = setTimeout(logout, remaining);
+    return () => clearTimeout(timer);
+  }, [user, logout, isSessionExpired]);
+
+  // Also check when the app comes back to the foreground (Capacitor)
+  useEffect(() => {
+    if (!user) return;
+    import('@capacitor/app').then(({ App: CapApp }) => {
+      CapApp.addListener('appStateChange', ({ isActive }) => {
+        if (isActive && isSessionExpired()) logout();
+      });
+    });
+  }, [user, logout, isSessionExpired]);
+
+  return null;
+}
+
 function PrivateRoute({ children }: { children: React.ReactNode }) {
   const user = useAuthStore(s => s.user);
   return user ? <>{children}</> : <Navigate to="/" replace />;
@@ -74,6 +104,7 @@ export default function App() {
   return (
     <BrowserRouter>
       <AndroidBackHandler />
+      <SessionGuard />
       <Routes>
         <Route path="/" element={<PublicRoute><Auth /></PublicRoute>} />
         <Route path="/reset-password" element={<ResetPassword />} />

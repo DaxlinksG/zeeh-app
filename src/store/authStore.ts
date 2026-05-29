@@ -13,14 +13,18 @@ interface AuthUser {
   has_pin?:        boolean;
 }
 
+const SESSION_MS = 24 * 60 * 60 * 1000; // 24 hours
+
 interface AuthState {
   user:         AuthUser | null;
   accessToken:  string | null;
   refreshToken: string | null;
+  loginAt:      number | null;   // Unix ms — used to enforce session expiry
   setAuth:      (user: AuthUser, access: string, refresh: string) => void;
   logout:       () => void;
   refresh:      () => Promise<void>;
   updateUser:   (partial: Partial<AuthUser>) => void;
+  isSessionExpired: () => boolean;
 }
 
 export const useAuthStore = create<AuthState>()(
@@ -29,9 +33,16 @@ export const useAuthStore = create<AuthState>()(
       user:         null,
       accessToken:  null,
       refreshToken: null,
+      loginAt:      null,
 
       setAuth: (user: AuthUser, accessToken: string, refreshToken: string) =>
-        set({ user, accessToken, refreshToken }),
+        set({ user, accessToken, refreshToken, loginAt: Date.now() }),
+
+      isSessionExpired: () => {
+        const { loginAt } = get();
+        if (!loginAt) return true;
+        return Date.now() - loginAt > SESSION_MS;
+      },
 
       updateUser: (partial: Partial<AuthUser>) =>
         set((s: AuthState) => ({ user: s.user ? { ...s.user, ...partial } : s.user })),

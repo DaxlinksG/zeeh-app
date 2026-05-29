@@ -50,6 +50,12 @@
   --g-heading: linear-gradient(90deg, #eaeaff 0%, #a78bfa 55%, #10d9b2 100%);
   --g-brand:   linear-gradient(90deg, #a78bfa, #10d9b2);
 
+  /* Badge text — dark: bright/saturated so they read on dark backgrounds */
+  --badge-green:  #10d9b2;
+  --badge-warn:   #f59e0b;
+  --badge-red:    #f43f5e;
+  --badge-purple: #a78bfa;
+
   /* Shape */
   --radius:      14px;
   --radius-lg:   20px;
@@ -61,8 +67,8 @@
 @media (prefers-color-scheme: light) {
   :root {
     --bg:       #eeedff;
-    --surface:  rgba(255,255,255,0.72);
-    --surface2: rgba(255,255,255,0.90);
+    --surface:  rgba(255,255,255,0.88);
+    --surface2: rgba(255,255,255,0.96);
     --border:   rgba(0,0,10,0.09);
     --text:  #0a091c;
     --muted: rgba(10,9,40,0.46);
@@ -79,6 +85,12 @@
     /* Gradient text — light mode needs dark colours for contrast */
     --g-heading: linear-gradient(90deg, #1a0550 0%, #7c3aed 55%, #0a806a 100%);
     --g-brand:   linear-gradient(90deg, #6d28d9, #0a806a);
+
+    /* Badge text — light: darker shades for contrast on white/near-white */
+    --badge-green:  #057a65;
+    --badge-warn:   #92400e;
+    --badge-red:    #be123c;
+    --badge-purple: #6d28d9;
   }
 }
 
@@ -125,6 +137,12 @@
   --orb-2:          rgba(16,217,178,.06);
   --g-heading: linear-gradient(90deg, #1a0550 0%, #7c3aed 55%, #0a806a 100%);
   --g-brand:   linear-gradient(90deg, #6d28d9, #0a806a);
+  --badge-green:  #057a65;
+  --badge-warn:   #92400e;
+  --badge-red:    #be123c;
+  --badge-purple: #6d28d9;
+  --surface:  rgba(255,255,255,0.88);
+  --surface2: rgba(255,255,255,0.96);
 }
 
 /* ─── Reset + Base ───────────────────────────────────────────── */
@@ -323,11 +341,12 @@ input:disabled, select:disabled { opacity: .38; cursor: not-allowed; }
   letter-spacing: .05em;
   text-transform: uppercase;
 }
-.badge-green  { background: rgba(16,217,178,.12); color: #0abf9e; border: 1px solid rgba(16,217,178,.25); }
+/* Badge colours use CSS variables so they stay readable in both themes */
+.badge-green  { background: rgba(16,217,178,.14); color: var(--badge-green); border: 1px solid rgba(16,217,178,.3); }
 .badge-grey   { background: var(--surface2); color: var(--muted); border: 1px solid var(--border); }
-.badge-warn   { background: rgba(245,158,11,.12); color: #d97706; border: 1px solid rgba(245,158,11,.25); }
-.badge-red    { background: rgba(244,63,94,.12); color: #e11d48; border: 1px solid rgba(244,63,94,.25); }
-.badge-purple { background: rgba(139,92,246,.13); color: #7c3aed; border: 1px solid rgba(139,92,246,.25); }
+.badge-warn   { background: rgba(245,158,11,.14); color: var(--badge-warn); border: 1px solid rgba(245,158,11,.3); }
+.badge-red    { background: rgba(244,63,94,.14); color: var(--badge-red); border: 1px solid rgba(244,63,94,.3); }
+.badge-purple { background: rgba(139,92,246,.14); color: var(--badge-purple); border: 1px solid rgba(139,92,246,.3); }
 
 /* ─── Spinner ────────────────────────────────────────────────── */
 .spinner {

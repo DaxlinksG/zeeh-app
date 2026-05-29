@@ -144,11 +144,21 @@ export default function Pay() {
 
       {/* ── Wallet / currency picker ── */}
       {showPicker && (
-        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.65)', display: 'flex', flexDirection: 'column', justifyContent: 'flex-end', zIndex: 9999 }}>
-          <div className="card" style={{ borderRadius: '24px 24px 0 0', padding: '1.5rem 1.5rem 2.5rem', maxHeight: '80vh', overflowY: 'auto' }}>
-            <div style={{ fontWeight: 700, fontSize: '1.05rem', marginBottom: '1.2rem' }}>Which wallet are you paying from?</div>
+        /* Centred modal — works on desktop and mobile */
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.72)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 9999, padding: '1.5rem' }}>
+          <div style={{
+            width: '100%', maxWidth: 420,
+            background: 'var(--bg)',          /* fully opaque — no glass issues */
+            border: '1px solid var(--border)',
+            borderRadius: 'var(--radius-lg)',
+            padding: '1.5rem',
+            maxHeight: '80vh', overflowY: 'auto',
+            boxShadow: '0 24px 64px rgba(0,0,0,0.55)',
+          }}>
+            <div style={{ fontWeight: 700, fontSize: '1.05rem', marginBottom: '.3rem' }}>Select wallet</div>
+            <div style={{ fontSize: '.82rem', color: 'var(--muted)', marginBottom: '1.2rem' }}>Which balance are you paying from?</div>
             {wallets.length === 0 ? (
-              <div style={{ textAlign: 'center', padding: '2rem', color: 'var(--muted)' }}><span className="spinner" /></div>
+              <div style={{ textAlign: 'center', padding: '2rem' }}><span className="spinner" /></div>
             ) : (
               wallets.map(w => (
                 <button
@@ -158,24 +168,29 @@ export default function Pay() {
                     width: '100%', display: 'flex', alignItems: 'center', gap: '1rem',
                     padding: '1rem', marginBottom: '.5rem',
                     background: 'var(--surface2)', border: '1px solid var(--border)',
-                    borderRadius: 14, cursor: 'pointer', textAlign: 'left',
-                    transition: 'all .15s',
+                    borderRadius: 12, cursor: 'pointer', textAlign: 'left',
+                    transition: 'background .15s',
                   }}
+                  onMouseEnter={e => (e.currentTarget.style.background = 'var(--surface)')}
+                  onMouseLeave={e => (e.currentTarget.style.background = 'var(--surface2)')}
                 >
                   <span style={{ fontSize: '1.6rem' }}>{FLAG[w.currency] ?? '🌐'}</span>
                   <div style={{ flex: 1 }}>
-                    <div style={{ fontWeight: 700 }}>{w.currency}</div>
+                    <div style={{ fontWeight: 700, color: 'var(--text)' }}>{w.currency}</div>
                     <div style={{ fontSize: '.8rem', color: 'var(--muted)' }}>{NAMES[w.currency] ?? w.currency}</div>
                   </div>
                   <div style={{ textAlign: 'right' }}>
-                    <div style={{ fontWeight: 700, color: 'var(--accent2)' }}>
+                    <div style={{ fontWeight: 700, color: 'var(--accent2)', fontSize: '.95rem' }}>
                       {parseFloat(w.available).toLocaleString('en-CA', { minimumFractionDigits: 2 })}
                     </div>
-                    <div style={{ fontSize: '.75rem', color: 'var(--muted)' }}>available</div>
+                    <div style={{ fontSize: '.72rem', color: 'var(--muted)' }}>available</div>
                   </div>
                 </button>
               ))
             )}
+            <button className="btn btn-ghost btn-full" style={{ marginTop: '.5rem' }} onClick={() => setShowPicker(false)}>
+              Cancel
+            </button>
           </div>
         </div>
       )}
