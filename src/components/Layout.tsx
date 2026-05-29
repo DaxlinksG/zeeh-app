@@ -15,9 +15,9 @@ const sidebarExtra = [
   { to: '/beneficiaries', label: 'Beneficiaries', icon: '👥' },
 ];
 
-const BRAND_GRADIENT = 'linear-gradient(90deg, #a78bfa, #10d9b2)';
+// Uses CSS variable so dark/light modes get proper contrast automatically
 const TEXT_GRADIENT: React.CSSProperties = {
-  background: BRAND_GRADIENT,
+  background: 'var(--g-brand)',
   WebkitBackgroundClip: 'text',
   WebkitTextFillColor: 'transparent',
   backgroundClip: 'text',
@@ -44,7 +44,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
         <NavLink to="/profile" style={{ textDecoration: 'none' }}>
           <div style={{
             width: 34, height: 34, borderRadius: '50%',
-            background: BRAND_GRADIENT,
+            background: 'var(--g-brand)',
             display: 'grid', placeItems: 'center',
             fontSize: '.78rem', fontWeight: 700, color: '#fff',
           }}>
@@ -63,7 +63,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
           <div style={{ display: 'flex', alignItems: 'center', gap: '.5rem' }}>
             <div style={{
               width: 24, height: 24, borderRadius: '50%',
-              background: BRAND_GRADIENT,
+              background: 'var(--g-brand)',
               display: 'grid', placeItems: 'center',
               fontSize: '.65rem', fontWeight: 700, color: '#fff', flexShrink: 0,
             }}>

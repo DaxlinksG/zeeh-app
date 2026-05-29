@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import api from '../lib/api';
 import { useAuthStore } from '../store/authStore';
 import { toast } from '../components/Toast';
@@ -29,7 +30,8 @@ const THEME_OPTIONS: { value: ThemePreference; label: string; icon: string }[] =
 ];
 
 export default function Profile() {
-  const { user, updateUser } = useAuthStore();
+  const { user, updateUser, logout } = useAuthStore();
+  const navigate = useNavigate();
   const [loading, setLoading] = useState(false);
   const [tab,     setTab]     = useState<Tab>('profile');
   const [themePref, setThemePref] = useState<ThemePreference>(getThemePreference);
@@ -407,6 +409,15 @@ export default function Profile() {
           </details>
         </div>
       )}
+
+      {/* Sign out — always visible on mobile where the sidebar is hidden */}
+      <button
+        className="btn btn-full"
+        style={{ marginTop: '1.5rem', color: 'var(--danger)', borderColor: 'rgba(244,63,94,0.25)', background: 'rgba(244,63,94,0.06)' }}
+        onClick={() => { logout(); navigate('/'); }}
+      >
+        ⏻ &nbsp;Sign out
+      </button>
     </div>
   );
 }

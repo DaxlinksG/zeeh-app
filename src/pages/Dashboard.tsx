@@ -161,7 +161,7 @@ export default function Dashboard() {
         </div>
         <h1 style={{
           fontSize: '2rem', fontWeight: 700, letterSpacing: '-.02em',
-          background: 'linear-gradient(90deg, #eaeaff 0%, #a78bfa 60%, #10d9b2 100%)',
+          background: 'var(--g-heading)',
           WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent', backgroundClip: 'text',
         }}>
           {user?.first_name} 👋

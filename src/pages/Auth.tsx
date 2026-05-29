@@ -108,13 +108,18 @@ export default function Auth() {
 
   /* ── SHARED SHELL ─────────────────────────────────────────────────────── */
   return (
-    <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '1rem', background: 'var(--bg)' }}>
+    <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '1.5rem 1rem', paddingTop: '3rem', background: 'var(--bg)' }}>
       <div style={{ width: '100%', maxWidth: 440 }}>
 
         {/* Brand */}
-        <div style={{ textAlign: 'center', marginBottom: '2rem' }}>
-          <div style={{ fontSize: '1.8rem', fontWeight: 700, marginBottom: '.3rem' }}>
-            Zeeh <span style={{ color: 'var(--accent2)' }}>Africa</span>
+        <div style={{ textAlign: 'center', marginBottom: '2.2rem' }}>
+          <div style={{ fontSize: '2.2rem', marginBottom: '.5rem' }}>💜</div>
+          <div style={{
+            fontSize: '2rem', fontWeight: 700, marginBottom: '.3rem',
+            background: 'var(--g-brand)',
+            WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent', backgroundClip: 'text',
+          }}>
+            Zeeh Africa
           </div>
           <div style={{ color: 'var(--muted)', fontSize: '.9rem' }}>Send, receive &amp; exchange across borders</div>
         </div>

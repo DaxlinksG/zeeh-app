@@ -46,6 +46,10 @@
   --orb-1:          rgba(124,58,237,.13);
   --orb-2:          rgba(16,217,178,.09);
 
+  /* Gradient text — dark mode uses light colours */
+  --g-heading: linear-gradient(90deg, #eaeaff 0%, #a78bfa 55%, #10d9b2 100%);
+  --g-brand:   linear-gradient(90deg, #a78bfa, #10d9b2);
+
   /* Shape */
   --radius:      14px;
   --radius-lg:   20px;
@@ -72,6 +76,9 @@
     --toast-err-bg:   rgba(255,235,238,0.96);
     --orb-1:          rgba(124,58,237,.08);
     --orb-2:          rgba(16,217,178,.06);
+    /* Gradient text — light mode needs dark colours for contrast */
+    --g-heading: linear-gradient(90deg, #1a0550 0%, #7c3aed 55%, #0a806a 100%);
+    --g-brand:   linear-gradient(90deg, #6d28d9, #0a806a);
   }
 }
 
@@ -94,6 +101,8 @@
   --toast-err-bg:   rgba(35,5,12,0.92);
   --orb-1:          rgba(124,58,237,.13);
   --orb-2:          rgba(16,217,178,.09);
+  --g-heading: linear-gradient(90deg, #eaeaff 0%, #a78bfa 55%, #10d9b2 100%);
+  --g-brand:   linear-gradient(90deg, #a78bfa, #10d9b2);
 }
 
 /* Force light even when system is dark */
@@ -114,6 +123,8 @@
   --toast-err-bg:   rgba(255,235,238,0.96);
   --orb-1:          rgba(124,58,237,.08);
   --orb-2:          rgba(16,217,178,.06);
+  --g-heading: linear-gradient(90deg, #1a0550 0%, #7c3aed 55%, #0a806a 100%);
+  --g-brand:   linear-gradient(90deg, #6d28d9, #0a806a);
 }
 
 /* ─── Reset + Base ───────────────────────────────────────────── */

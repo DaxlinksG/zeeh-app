@@ -1,4 +1,5 @@
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, Navigate, useNavigate, useLocation } from 'react-router-dom';
+import { useEffect } from 'react';
 import { useAuthStore } from './store/authStore';
 import Layout from './components/Layout';
 import { ToastContainer } from './components/Toast';
@@ -14,6 +15,32 @@ import Transactions    from './pages/Transactions';
 import Profile         from './pages/Profile';
 import Beneficiaries   from './pages/Beneficiaries';
 
+/** Intercepts the Android hardware back button.
+ *  - Go back if there's history
+ *  - Exit the app if on a root screen (dashboard, auth)
+ */
+function AndroidBackHandler() {
+  const navigate  = useNavigate();
+  const location  = useLocation();
+  const rootPaths = ['/dashboard', '/'];
+
+  useEffect(() => {
+    let handle: { remove: () => void } | null = null;
+    import('@capacitor/app').then(({ App: CapApp }) => {
+      CapApp.addListener('backButton', ({ canGoBack }) => {
+        if (canGoBack && !rootPaths.includes(location.pathname)) {
+          navigate(-1);
+        } else {
+          CapApp.exitApp();
+        }
+      }).then(h => { handle = h; });
+    });
+    return () => { handle?.remove(); };
+  }, [location.pathname, navigate]);
+
+  return null;
+}
+
 function PrivateRoute({ children }: { children: React.ReactNode }) {
   const user = useAuthStore(s => s.user);
   return user ? <>{children}</> : <Navigate to="/" replace />;
@@ -27,6 +54,7 @@ function PublicRoute({ children }: { children: React.ReactNode }) {
 export default function App() {
   return (
     <BrowserRouter>
+      <AndroidBackHandler />
       <Routes>
         <Route path="/" element={<PublicRoute><Auth /></PublicRoute>} />
         <Route path="/reset-password" element={<ResetPassword />} />
