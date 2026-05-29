@@ -182,8 +182,13 @@ export default function Send() {
             </div>
           )}
           {isInsufficient && (
-            <div style={{ marginBottom: '.8rem', padding: '.55rem 1rem', background: 'rgba(244,63,94,0.1)', border: '1px solid rgba(244,63,94,0.25)', borderRadius: 8, fontSize: '.8rem', color: 'var(--danger)', fontWeight: 600 }}>
-              ⚠️ Amount exceeds your available balance
+            <div style={{ padding: '.8rem 1rem', background: 'rgba(244,63,94,0.1)', border: '1px solid rgba(244,63,94,0.25)', borderRadius: 10, marginBottom: '.8rem' }}>
+              <div style={{ fontSize: '.8rem', color: 'var(--danger)', fontWeight: 600, marginBottom: '.5rem' }}>
+                ⚠️ Amount exceeds your {currency} balance
+              </div>
+              <button className="btn btn-sm btn-primary" onClick={() => navigate(`/wallet/${currency}?tab=deposit`)}>
+                + Fund {currency} wallet →
+              </button>
             </div>
           )}
 

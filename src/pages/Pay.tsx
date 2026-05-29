@@ -1,9 +1,12 @@
 import { useState, useEffect } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useSearchParams, useNavigate } from 'react-router-dom';
 import api from '../lib/api';
 import { useAuthStore } from '../store/authStore';
 import { toast } from '../components/Toast';
 import { PinModal } from '../components/PinModal';
+
+const FLAG: Record<string, string> = { CAD:'🇨🇦', USD:'🇺🇸', NGN:'🇳🇬', GBP:'🇬🇧', EUR:'🇪🇺' };
+const NAMES: Record<string, string> = { CAD:'Canadian Dollar', USD:'US Dollar', NGN:'Nigerian Naira', GBP:'British Pound', EUR:'Euro' };
 
 type Currency = 'CAD' | 'USD' | 'NGN' | 'GBP' | 'EUR';
 
@@ -38,16 +41,29 @@ const FIELDS: Record<Currency, { key: string; label: string; type?: string; requ
   ],
 };
 
+interface WalletBalance { currency: string; available: string; }
+
 export default function Pay() {
-  const { user } = useAuthStore();
-  const needsKyc = user?.kyc_status !== 'approved';
+  const { user }      = useAuthStore();
+  const navigate      = useNavigate();
+  const needsKyc      = user?.kyc_status !== 'approved';
   const [searchParams] = useSearchParams();
 
-  // Pre-select currency if navigated from a balance card
+  // Pre-select currency if navigated from a balance card / wallet page
   const urlCurrency = searchParams.get('currency') as Currency | null;
+  const hasUrlCurrency = !!(urlCurrency && Object.keys(FIELDS).includes(urlCurrency));
+
   const [currency,  setCurrency]  = useState<Currency>(
-    urlCurrency && Object.keys(FIELDS).includes(urlCurrency) ? urlCurrency : 'NGN'
+    hasUrlCurrency ? urlCurrency! : 'NGN'
   );
+  // Show wallet picker if no currency was passed in the URL
+  const [showPicker,  setShowPicker]  = useState(!hasUrlCurrency);
+  const [wallets,     setWallets]     = useState<WalletBalance[]>([]);
+
+  useEffect(() => {
+    if (!showPicker) return;
+    api.get('/me/balance').then(r => setWallets(r.data.data?.balances ?? [])).catch(() => {});
+  }, [showPicker]);
   const [amount,    setAmount]    = useState('');
   const [reference, setReference] = useState('');
   const [fields,    setFields]    = useState<Record<string, string>>({});
@@ -126,6 +142,44 @@ export default function Pay() {
       <h1 style={{ fontSize: '1.4rem', fontWeight: 700, marginBottom: '.4rem' }}>Bank Transfer</h1>
       <p style={{ color: 'var(--muted)', marginBottom: '1.6rem', fontSize: '.9rem' }}>Send money to any bank account.</p>
 
+      {/* ── Wallet / currency picker ── */}
+      {showPicker && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.65)', display: 'flex', flexDirection: 'column', justifyContent: 'flex-end', zIndex: 9999 }}>
+          <div className="card" style={{ borderRadius: '24px 24px 0 0', padding: '1.5rem 1.5rem 2.5rem', maxHeight: '80vh', overflowY: 'auto' }}>
+            <div style={{ fontWeight: 700, fontSize: '1.05rem', marginBottom: '1.2rem' }}>Which wallet are you paying from?</div>
+            {wallets.length === 0 ? (
+              <div style={{ textAlign: 'center', padding: '2rem', color: 'var(--muted)' }}><span className="spinner" /></div>
+            ) : (
+              wallets.map(w => (
+                <button
+                  key={w.currency}
+                  onClick={() => { setCurrency(w.currency as Currency); setShowPicker(false); }}
+                  style={{
+                    width: '100%', display: 'flex', alignItems: 'center', gap: '1rem',
+                    padding: '1rem', marginBottom: '.5rem',
+                    background: 'var(--surface2)', border: '1px solid var(--border)',
+                    borderRadius: 14, cursor: 'pointer', textAlign: 'left',
+                    transition: 'all .15s',
+                  }}
+                >
+                  <span style={{ fontSize: '1.6rem' }}>{FLAG[w.currency] ?? '🌐'}</span>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontWeight: 700 }}>{w.currency}</div>
+                    <div style={{ fontSize: '.8rem', color: 'var(--muted)' }}>{NAMES[w.currency] ?? w.currency}</div>
+                  </div>
+                  <div style={{ textAlign: 'right' }}>
+                    <div style={{ fontWeight: 700, color: 'var(--accent2)' }}>
+                      {parseFloat(w.available).toLocaleString('en-CA', { minimumFractionDigits: 2 })}
+                    </div>
+                    <div style={{ fontSize: '.75rem', color: 'var(--muted)' }}>available</div>
+                  </div>
+                </button>
+              ))
+            )}
+          </div>
+        </div>
+      )}
+
       {needsKyc && (
         <div style={{ background: 'rgba(255,77,109,.08)', border: '1px solid rgba(255,77,109,.25)', borderRadius: 'var(--radius)', padding: '1rem', marginBottom: '1.2rem', fontSize: '.85rem', color: 'var(--danger)' }}>
           🔒 KYC verification required for bank transfers. <a href="/profile" style={{ color: 'var(--accent)', textDecoration: 'underline' }}>Verify now →</a>
@@ -141,8 +195,13 @@ export default function Pay() {
           </span>
         </div>
         {isInsufficient && (
-          <div style={{ marginBottom: '.8rem', padding: '.6rem 1rem', background: 'rgba(244,63,94,0.1)', border: '1px solid rgba(244,63,94,0.25)', borderRadius: 8, fontSize: '.82rem', color: 'var(--danger)', fontWeight: 600 }}>
-            ⚠️ Insufficient balance — you have {parseFloat(available!).toLocaleString('en-CA', { minimumFractionDigits: 2 })} {currency} available
+          <div style={{ marginBottom: '.8rem', padding: '.8rem 1rem', background: 'rgba(244,63,94,0.1)', border: '1px solid rgba(244,63,94,0.25)', borderRadius: 10 }}>
+            <div style={{ fontSize: '.82rem', color: 'var(--danger)', fontWeight: 600, marginBottom: '.5rem' }}>
+              ⚠️ Insufficient balance — you have {parseFloat(available!).toLocaleString('en-CA', { minimumFractionDigits: 2 })} {currency}
+            </div>
+            <button className="btn btn-sm btn-primary" onClick={() => navigate(`/wallet/${currency}?tab=deposit`)}>
+              + Fund {currency} wallet →
+            </button>
           </div>
         )}
 

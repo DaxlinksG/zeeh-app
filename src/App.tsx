@@ -14,6 +14,7 @@ import Deposit         from './pages/Deposit';
 import Transactions    from './pages/Transactions';
 import Profile         from './pages/Profile';
 import Beneficiaries   from './pages/Beneficiaries';
+import CurrencyWallet  from './pages/CurrencyWallet';
 
 /** Intercepts the Android hardware back button.
  *
@@ -87,7 +88,8 @@ export default function App() {
                 <Route path="/deposit"      element={<Deposit />} />
                 <Route path="/transactions" element={<Transactions />} />
                 <Route path="/profile"        element={<Profile />} />
-                <Route path="/beneficiaries" element={<Beneficiaries />} />
+                <Route path="/beneficiaries"       element={<Beneficiaries />} />
+                <Route path="/wallet/:currency"    element={<CurrencyWallet />} />
                 <Route path="*"              element={<Navigate to="/dashboard" replace />} />
               </Routes>
             </Layout>

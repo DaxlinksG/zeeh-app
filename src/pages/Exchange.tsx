@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { useSearchParams, useNavigate } from 'react-router-dom';
 import api from '../lib/api';
 import { useAuthStore } from '../store/authStore';
 import { toast } from '../components/Toast';
@@ -7,8 +8,12 @@ import { PinModal } from '../components/PinModal';
 const CURRENCIES = ['CAD', 'USD', 'NGN', 'GBP', 'EUR'];
 
 export default function Exchange() {
-  const { user } = useAuthStore();
-  const [from,    setFrom]    = useState('CAD');
+  const { user }       = useAuthStore();
+  const navigate       = useNavigate();
+  const [searchParams] = useSearchParams();
+  const urlFrom        = searchParams.get('from');
+
+  const [from,    setFrom]    = useState(urlFrom && CURRENCIES.includes(urlFrom) ? urlFrom : 'CAD');
   const [to,      setTo]      = useState('NGN');
   const [amount,  setAmount]  = useState('');
   const [rate,    setRate]    = useState<number | null>(null);
@@ -101,8 +106,13 @@ export default function Exchange() {
           </span>
         </div>
         {isInsufficient && (
-          <div style={{ marginBottom: '.8rem', padding: '.6rem 1rem', background: 'rgba(244,63,94,0.1)', border: '1px solid rgba(244,63,94,0.25)', borderRadius: 8, fontSize: '.82rem', color: 'var(--danger)', fontWeight: 600 }}>
-            ⚠️ Insufficient balance — you have {parseFloat(available!).toLocaleString('en-CA', { minimumFractionDigits: 2 })} {from}
+          <div style={{ marginBottom: '.8rem', padding: '.8rem 1rem', background: 'rgba(244,63,94,0.1)', border: '1px solid rgba(244,63,94,0.25)', borderRadius: 10 }}>
+            <div style={{ fontSize: '.82rem', color: 'var(--danger)', fontWeight: 600, marginBottom: '.5rem' }}>
+              ⚠️ Insufficient balance — you have {parseFloat(available!).toLocaleString('en-CA', { minimumFractionDigits: 2 })} {from}
+            </div>
+            <button className="btn btn-sm btn-primary" onClick={() => navigate(`/wallet/${from}?tab=deposit`)}>
+              + Fund {from} wallet →
+            </button>
           </div>
         )}
 

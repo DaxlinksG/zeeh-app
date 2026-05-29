@@ -1,9 +1,10 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import axios from 'axios';
 import api, { API_BASE } from '../lib/api';
 import { useAuthStore } from '../store/authStore';
 import { toast } from '../components/Toast';
+import { PullToRefresh } from '../components/PullToRefresh';
 
 
 interface Balance { currency: string; balance: string; available: string; }
@@ -37,20 +38,24 @@ export default function Dashboard() {
   const [otpResending,  setOtpResending]  = useState(false);
   const navigate = useNavigate();
 
-  useEffect(() => {
-    Promise.all([
-      api.get('/me/balance'),
-      api.get('/me/profile'),
-    ]).then(([balRes, profileRes]) => {
+  const loadData = useCallback(async () => {
+    try {
+      const [balRes, profileRes] = await Promise.all([
+        api.get('/me/balance'),
+        api.get('/me/profile'),
+      ]);
       setBalances(balRes.data.data?.balances ?? []);
       const u = profileRes.data.data;
       updateUser({ kyc_status: u.kyc_status, email_verified: u.email_verified, has_pin: u.has_pin });
-    }).catch(() => {
-      api.get('/me/balance')
-        .then(r => setBalances(r.data.data?.balances ?? []))
-        .catch(() => toast('Failed to load balances', 'err'));
-    }).finally(() => setLoading(false));
+    } catch {
+      try {
+        const r = await api.get('/me/balance');
+        setBalances(r.data.data?.balances ?? []);
+      } catch { toast('Failed to load balances', 'err'); }
+    } finally { setLoading(false); }
   }, [updateUser]);
+
+  useEffect(() => { loadData(); }, [loadData]);
 
   async function handleVerifyEmail(e: React.FormEvent) {
     e.preventDefault();
@@ -104,6 +109,8 @@ export default function Dashboard() {
   ];
 
   return (
+    <>
+    <PullToRefresh onRefresh={loadData} />
     <div style={{ maxWidth: 800 }}>
       {/* Greeting */}
       <div style={{ marginBottom: '1.5rem' }}>
@@ -253,7 +260,7 @@ export default function Dashboard() {
               key={b.currency}
               className="card"
               style={{ cursor: 'pointer', transition: 'all .18s ease' }}
-              onClick={() => navigate(`/pay?currency=${b.currency}`)}
+              onClick={() => navigate(`/wallet/${b.currency}`)}
               onMouseEnter={e => { (e.currentTarget as HTMLElement).style.transform = 'translateY(-2px)'; (e.currentTarget as HTMLElement).style.borderColor = 'rgba(139,92,246,0.3)'; }}
               onMouseLeave={e => { (e.currentTarget as HTMLElement).style.transform = ''; (e.currentTarget as HTMLElement).style.borderColor = ''; }}
             >
@@ -276,7 +283,7 @@ export default function Dashboard() {
               </div>
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                 <div style={{ fontSize: '.72rem', color: 'var(--muted)' }}>Available balance</div>
-                <div style={{ fontSize: '.7rem', color: 'var(--accent)', fontWeight: 600 }}>Pay →</div>
+                <div style={{ fontSize: '.7rem', color: 'var(--accent)', fontWeight: 600 }}>View →</div>
               </div>
               {parseFloat(b.balance) !== parseFloat(b.available) && (
                 <div style={{
@@ -293,6 +300,7 @@ export default function Dashboard() {
         </div>
       )}
     </div>
+    </>
   );
 }
 
