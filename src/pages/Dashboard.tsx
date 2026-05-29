@@ -118,11 +118,14 @@ const CURRENCY_NAMES: Record<string, string> = {
   CAD: 'Canadian Dollar', USD: 'US Dollar', NGN: 'Nigerian Naira', GBP: 'British Pound', EUR: 'Euro',
 };
 
-const quickActions = [
-  { label: 'Send',     icon: '↗', path: '/send',     grad: 'linear-gradient(135deg,#7c3aed,#a78bfa)' },
-  { label: 'Pay',      icon: '🏦', path: '/pay',      grad: 'linear-gradient(135deg,#0ea5e9,#38bdf8)' },
-  { label: 'Exchange', icon: '⇄', path: '/exchange', grad: 'linear-gradient(135deg,#f59e0b,#f97316)' },
-  { label: 'Deposit',  icon: '↙', path: '/deposit',  grad: 'linear-gradient(135deg,#10b981,#34d399)' },
+// Revenue-first layout: Exchange + Pay get the large tiles
+const primaryActions = [
+  { label: 'Exchange', desc: 'Convert currencies',  icon: '⇄', path: '/exchange', grad: 'linear-gradient(135deg,#f59e0b,#f97316)' },
+  { label: 'Pay',      desc: 'Bank transfer',        icon: '🏦', path: '/pay',      grad: 'linear-gradient(135deg,#0ea5e9,#38bdf8)' },
+];
+const secondaryActions = [
+  { label: 'Send',    icon: '↗', path: '/send',    grad: 'linear-gradient(135deg,#7c3aed,#a78bfa)' },
+  { label: 'Deposit', icon: '↙', path: '/deposit', grad: 'linear-gradient(135deg,#10b981,#34d399)' },
 ];
 
 export default function Dashboard() {
@@ -199,9 +202,9 @@ export default function Dashboard() {
         </div>
       )}
 
-      {/* Quick actions */}
-      <div className="grid-4" style={{ marginBottom: '2rem' }}>
-        {quickActions.map(a => (
+      {/* Primary actions — Exchange + Pay (revenue drivers, larger tiles) */}
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '.8rem', marginBottom: '.8rem' }}>
+        {primaryActions.map(a => (
           <button
             key={a.label}
             onClick={() => navigate(a.path)}
@@ -209,36 +212,50 @@ export default function Dashboard() {
               background: 'var(--surface)',
               border: '1px solid var(--border)',
               borderRadius: 20,
-              padding: '1.2rem .6rem',
+              padding: '1.4rem 1rem',
               cursor: 'pointer',
               display: 'flex', flexDirection: 'column',
-              alignItems: 'center', gap: '.6rem',
+              alignItems: 'flex-start', gap: '.7rem',
               transition: 'all .18s cubic-bezier(.4,0,.2,1)',
+              textAlign: 'left',
             }}
-            onMouseEnter={e => {
-              e.currentTarget.style.background = 'rgba(255,255,255,0.08)';
-              e.currentTarget.style.transform = 'translateY(-3px)';
-              e.currentTarget.style.boxShadow = '0 8px 24px rgba(0,0,0,0.35)';
-            }}
-            onMouseLeave={e => {
-              e.currentTarget.style.background = 'var(--surface)';
-              e.currentTarget.style.transform = '';
-              e.currentTarget.style.boxShadow = '';
-            }}
+            onMouseEnter={e => { e.currentTarget.style.background = 'rgba(255,255,255,0.08)'; e.currentTarget.style.transform = 'translateY(-2px)'; }}
+            onMouseLeave={e => { e.currentTarget.style.background = 'var(--surface)'; e.currentTarget.style.transform = ''; }}
           >
-            <div style={{
-              width: 48, height: 48,
-              borderRadius: 15,
-              background: a.grad,
-              display: 'grid', placeItems: 'center',
-              fontSize: '1.25rem',
-              boxShadow: '0 4px 16px rgba(0,0,0,0.35)',
-            }}>
+            <div style={{ width: 52, height: 52, borderRadius: 16, background: a.grad, display: 'grid', placeItems: 'center', fontSize: '1.4rem', boxShadow: '0 4px 16px rgba(0,0,0,0.3)' }}>
               {a.icon}
             </div>
-            <span style={{ fontSize: '.78rem', fontWeight: 600, color: 'var(--text)', letterSpacing: '.01em' }}>
-              {a.label}
-            </span>
+            <div>
+              <div style={{ fontWeight: 700, fontSize: '.95rem', color: 'var(--text)' }}>{a.label}</div>
+              <div style={{ fontSize: '.75rem', color: 'var(--muted)', marginTop: '.1rem' }}>{a.desc}</div>
+            </div>
+          </button>
+        ))}
+      </div>
+
+      {/* Secondary actions — Send + Deposit (smaller tiles) */}
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '.8rem', marginBottom: '2rem' }}>
+        {secondaryActions.map(a => (
+          <button
+            key={a.label}
+            onClick={() => navigate(a.path)}
+            style={{
+              background: 'var(--surface)',
+              border: '1px solid var(--border)',
+              borderRadius: 16,
+              padding: '1rem .8rem',
+              cursor: 'pointer',
+              display: 'flex', flexDirection: 'row',
+              alignItems: 'center', gap: '.7rem',
+              transition: 'all .18s ease',
+            }}
+            onMouseEnter={e => { e.currentTarget.style.background = 'rgba(255,255,255,0.08)'; }}
+            onMouseLeave={e => { e.currentTarget.style.background = 'var(--surface)'; }}
+          >
+            <div style={{ width: 40, height: 40, borderRadius: 12, background: a.grad, display: 'grid', placeItems: 'center', fontSize: '1.1rem', flexShrink: 0 }}>
+              {a.icon}
+            </div>
+            <span style={{ fontWeight: 600, fontSize: '.88rem', color: 'var(--text)' }}>{a.label}</span>
           </button>
         ))}
       </div>
@@ -264,7 +281,7 @@ export default function Dashboard() {
               key={b.currency}
               className="card"
               style={{ cursor: 'pointer', transition: 'all .18s ease' }}
-              onClick={() => navigate('/transactions')}
+              onClick={() => navigate(`/pay?currency=${b.currency}`)}
               onMouseEnter={e => { (e.currentTarget as HTMLElement).style.transform = 'translateY(-2px)'; (e.currentTarget as HTMLElement).style.borderColor = 'rgba(139,92,246,0.3)'; }}
               onMouseLeave={e => { (e.currentTarget as HTMLElement).style.transform = ''; (e.currentTarget as HTMLElement).style.borderColor = ''; }}
             >
@@ -285,7 +302,10 @@ export default function Dashboard() {
               <div style={{ fontSize: '1.65rem', fontWeight: 700, letterSpacing: '-.02em', marginBottom: '.1rem' }}>
                 {fmt(b.available)}
               </div>
-              <div style={{ fontSize: '.72rem', color: 'var(--muted)' }}>Available balance</div>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                <div style={{ fontSize: '.72rem', color: 'var(--muted)' }}>Available balance</div>
+                <div style={{ fontSize: '.7rem', color: 'var(--accent)', fontWeight: 600 }}>Pay →</div>
+              </div>
               {parseFloat(b.balance) !== parseFloat(b.available) && (
                 <div style={{
                   marginTop: '.6rem', padding: '.35rem .7rem',

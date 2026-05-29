@@ -287,6 +287,21 @@ input, select, textarea {
   transition: border-color .15s, box-shadow .15s, background .3s ease, color .3s ease;
 }
 input::placeholder { color: var(--muted); opacity: .6; }
+
+/* Android WebView autofill override — prevents black text on dark bg */
+input:-webkit-autofill,
+input:-webkit-autofill:hover,
+input:-webkit-autofill:focus {
+  -webkit-text-fill-color: var(--text) !important;
+  -webkit-box-shadow: 0 0 0px 1000px #1a1030 inset !important;
+  caret-color: var(--text);
+  transition: background-color 5000s ease-in-out 0s;
+}
+[data-theme="light"] input:-webkit-autofill,
+[data-theme="light"] input:-webkit-autofill:focus {
+  -webkit-box-shadow: 0 0 0px 1000px #ede8ff inset !important;
+}
+
 input:focus, select:focus, textarea:focus {
   border-color: rgba(139,92,246,0.55);
   box-shadow: 0 0 0 3px rgba(139,92,246,0.12);
@@ -542,7 +557,7 @@ input:disabled, select:disabled { opacity: .38; cursor: not-allowed; }
     display: flex;
     position: fixed;
     bottom: 0; left: 0; right: 0;
-    height: 62px;
+    height: 72px;
     background: var(--glass-nav);
     backdrop-filter: blur(24px);
     -webkit-backdrop-filter: blur(24px);
@@ -556,8 +571,8 @@ input:disabled, select:disabled { opacity: .38; cursor: not-allowed; }
     flex: 1;
     display: flex; flex-direction: column;
     align-items: center; justify-content: center;
-    gap: 2px;
-    font-size: .6rem; font-weight: 600;
+    gap: 4px;
+    font-size: .7rem; font-weight: 600;
     color: var(--muted);
     background: transparent; border: none;
     cursor: pointer; padding: 0;
@@ -565,10 +580,13 @@ input:disabled, select:disabled { opacity: .38; cursor: not-allowed; }
     font-family: inherit;
     transition: color .15s;
     -webkit-tap-highlight-color: transparent;
-    letter-spacing: .03em;
+    letter-spacing: .02em;
   }
   .app-bottom-nav a.active { color: var(--accent); }
-  .app-bottom-nav .bnav-icon { font-size: 1.2rem; line-height: 1; }
+  .app-bottom-nav .bnav-icon { font-size: 1.5rem; line-height: 1; }
+
+  /* Pad main content to clear taller nav */
+  .app-main { padding-bottom: 6rem; }
 
   #toast-root { bottom: 4.5rem; right: .8rem; left: .8rem; }
   .toast { max-width: 100%; width: 100%; }

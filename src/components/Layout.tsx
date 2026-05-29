@@ -1,11 +1,12 @@
 import { NavLink, useNavigate } from 'react-router-dom';
 import { useAuthStore } from '../store/authStore';
 
+// Bottom nav order = revenue priority: Exchange + Pay front and centre
 const navItems = [
   { to: '/dashboard',    label: 'Home',     icon: '⊞' },
-  { to: '/send',         label: 'Send',     icon: '↗' },
   { to: '/exchange',     label: 'Exchange', icon: '⇄' },
-  { to: '/deposit',      label: 'Deposit',  icon: '↙' },
+  { to: '/pay',          label: 'Pay',      icon: '🏦' },
+  { to: '/send',         label: 'Send',     icon: '↗' },
   { to: '/transactions', label: 'History',  icon: '≡' },
 ];
 

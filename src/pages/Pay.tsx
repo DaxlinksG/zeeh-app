@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import api from '../lib/api';
 import { useAuthStore } from '../store/authStore';
 import { toast } from '../components/Toast';
@@ -40,8 +41,13 @@ const FIELDS: Record<Currency, { key: string; label: string; type?: string; requ
 export default function Pay() {
   const { user } = useAuthStore();
   const needsKyc = user?.kyc_status !== 'approved';
+  const [searchParams] = useSearchParams();
 
-  const [currency,  setCurrency]  = useState<Currency>('NGN');
+  // Pre-select currency if navigated from a balance card
+  const urlCurrency = searchParams.get('currency') as Currency | null;
+  const [currency,  setCurrency]  = useState<Currency>(
+    urlCurrency && Object.keys(FIELDS).includes(urlCurrency) ? urlCurrency : 'NGN'
+  );
   const [amount,    setAmount]    = useState('');
   const [reference, setReference] = useState('');
   const [fields,    setFields]    = useState<Record<string, string>>({});
