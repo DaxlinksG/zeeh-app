@@ -26,6 +26,18 @@ export default function Send() {
   const [ref,         setRef]         = useState('');
   const [loading,     setLoading]     = useState(false);
   const [pinError,    setPinError]    = useState('');
+  const [available,   setAvailable]   = useState<string | null>(null);
+
+  // Fetch balance when amount step is active or currency changes
+  useEffect(() => {
+    if (step !== 'amount') return;
+    setAvailable(null);
+    api.get(`/me/balance/${currency}`)
+      .then(r => setAvailable(r.data.data?.available ?? '0'))
+      .catch(() => setAvailable(null));
+  }, [step, currency]);
+
+  const isInsufficient = available !== null && amount !== '' && parseFloat(amount) > parseFloat(available);
 
   useEffect(() => {
     api.get('/me/beneficiaries')
@@ -115,7 +127,7 @@ export default function Send() {
                     {b.first_name[0].toUpperCase()}
                   </div>
                   <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontWeight: 500 }}>{b.first_name} {b.last_name}</div>
+                    <div style={{ fontWeight: 600, color: 'var(--text)' }}>{b.first_name} {b.last_name}</div>
                     <div style={{ fontSize: '.8rem', color: 'var(--muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{b.email}</div>
                   </div>
                   <span style={{ color: 'var(--muted)', fontSize: '1.2rem' }}>›</span>
@@ -160,9 +172,24 @@ export default function Send() {
             <input value={note} onChange={e => setNote(e.target.value)} placeholder="Dinner, rent, etc." />
           </div>
 
+          {/* Balance + insufficient funds warning */}
+          {available !== null && (
+            <div style={{ marginBottom: '.8rem', padding: '.6rem 1rem', background: 'var(--surface2)', borderRadius: 8, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <span style={{ fontSize: '.78rem', color: 'var(--muted)', fontWeight: 600 }}>Your {currency} balance</span>
+              <span style={{ fontWeight: 700, fontSize: '.88rem', color: isInsufficient ? 'var(--danger)' : 'var(--accent2)' }}>
+                {parseFloat(available).toLocaleString('en-CA', { minimumFractionDigits: 2 })} {currency}
+              </span>
+            </div>
+          )}
+          {isInsufficient && (
+            <div style={{ marginBottom: '.8rem', padding: '.55rem 1rem', background: 'rgba(244,63,94,0.1)', border: '1px solid rgba(244,63,94,0.25)', borderRadius: 8, fontSize: '.8rem', color: 'var(--danger)', fontWeight: 600 }}>
+              ⚠️ Amount exceeds your available balance
+            </div>
+          )}
+
           <div style={{ display: 'flex', gap: '.7rem', marginTop: '.5rem' }}>
             <button className="btn btn-ghost" onClick={() => setStep('pick')}>← Back</button>
-            <button className="btn btn-primary" style={{ flex: 1 }} disabled={!amount} onClick={() => setStep('confirm')}>
+            <button className="btn btn-primary" style={{ flex: 1 }} disabled={!amount || isInsufficient} onClick={() => setStep('confirm')}>
               Review →
             </button>
           </div>

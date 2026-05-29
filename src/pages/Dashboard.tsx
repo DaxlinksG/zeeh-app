@@ -5,108 +5,6 @@ import api, { API_BASE } from '../lib/api';
 import { useAuthStore } from '../store/authStore';
 import { toast } from '../components/Toast';
 
-/** Inline banner + OTP modal for users who skipped email verification */
-function EmailVerifyBanner() {
-  const [showModal,   setShowModal]   = useState(false);
-  const [otp,         setOtp]         = useState('');
-  const [loading,     setLoading]     = useState(false);
-  const [resending,   setResending]   = useState(false);
-  const accessToken = useAuthStore(s => s.accessToken);
-  const updateUser  = useAuthStore(s => s.updateUser);
-
-  // A code was already sent when the account was created — open the modal directly.
-  // Resend is only triggered explicitly by the user inside the modal.
-  function openModal() { setOtp(''); setShowModal(true); }
-
-  async function handleResend() {
-    if (!accessToken || resending) return;
-    setResending(true);
-    try {
-      await axios.post(`${API_BASE}/auth/resend-otp`, {}, { headers: { Authorization: `Bearer ${accessToken}` } });
-      toast('A new code has been sent — check your email.');
-    } catch (err: unknown) {
-      // Show the API's message verbatim (e.g. "Please wait 52 seconds…") rather than a generic error
-      const msg = (axios.isAxiosError(err) && err.response?.data?.message) || 'Could not resend code. Try again.';
-      toast(msg, 'err');
-    } finally { setResending(false); }
-  }
-
-  async function handleVerify(e: React.FormEvent) {
-    e.preventDefault();
-    if (!accessToken) return;
-    setLoading(true);
-    try {
-      await axios.post(
-        `${API_BASE}/auth/verify-email`,
-        { otp: otp.replace(/\s/g, '') },
-        { headers: { Authorization: `Bearer ${accessToken}` } },
-      );
-      updateUser({ email_verified: true });
-      toast('Email verified! ✅');
-      setShowModal(false);
-    } catch (err: unknown) {
-      toast((axios.isAxiosError(err) && err.response?.data?.message) || 'Incorrect code', 'err');
-    } finally { setLoading(false); }
-  }
-
-  return (
-    <>
-      <div style={{
-        background: 'rgba(108,99,255,.1)', border: '1px solid rgba(108,99,255,.35)',
-        borderRadius: 'var(--radius)', padding: '1rem 1.2rem',
-        marginBottom: '1.5rem', display: 'flex', alignItems: 'center',
-        justifyContent: 'space-between', gap: '1rem', flexWrap: 'wrap',
-      }}>
-        <div>
-          <strong style={{ color: 'var(--accent)' }}>📧 Verify your email</strong>
-          <div style={{ fontSize: '.84rem', color: 'var(--muted)', marginTop: '.2rem' }}>
-            A verification code was sent to your email when you registered. Enter it to unlock transactions.
-          </div>
-        </div>
-        <button className="btn btn-primary" style={{ whiteSpace: 'nowrap', fontSize: '.84rem' }} onClick={openModal}>
-          Enter code
-        </button>
-      </div>
-
-      {showModal && (
-        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.7)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 9999, padding: '1rem' }}>
-          <div className="card" style={{ width: '100%', maxWidth: 380 }}>
-            <div style={{ textAlign: 'center', marginBottom: '1.5rem' }}>
-              <div style={{ fontSize: '2rem', marginBottom: '.4rem' }}>📧</div>
-              <div style={{ fontWeight: 700, marginBottom: '.3rem' }}>Verify your email</div>
-              <div style={{ fontSize: '.85rem', color: 'var(--muted)' }}>Enter the 6-digit code sent to your email when you signed up.</div>
-            </div>
-            <form onSubmit={handleVerify}>
-              <input
-                type="text" inputMode="numeric" autoComplete="one-time-code" maxLength={6}
-                placeholder="000000" value={otp} onChange={e => setOtp(e.target.value.replace(/\D/g, ''))}
-                style={{ width: '100%', textAlign: 'center', fontSize: '1.6rem', letterSpacing: '0.3em', fontFamily: 'monospace', marginBottom: '1rem', padding: '.7rem', background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 'var(--radius)', color: 'var(--text)' }}
-                required
-              />
-              <div style={{ display: 'flex', gap: '.6rem', marginBottom: '1rem' }}>
-                <button type="button" className="btn" style={{ flex: 1 }} onClick={() => setShowModal(false)}>Cancel</button>
-                <button type="submit" className="btn btn-primary" style={{ flex: 2 }} disabled={loading || otp.length !== 6}>
-                  {loading ? <span className="spinner" /> : 'Verify'}
-                </button>
-              </div>
-            </form>
-            <div style={{ textAlign: 'center', fontSize: '.82rem', color: 'var(--muted)' }}>
-              Didn't receive a code?{' '}
-              <button
-                type="button"
-                onClick={handleResend}
-                disabled={resending}
-                style={{ background: 'none', border: 'none', color: 'var(--accent)', cursor: 'pointer', padding: 0, fontSize: 'inherit', textDecoration: 'underline' }}
-              >
-                {resending ? 'Sending…' : 'Resend code'}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-    </>
-  );
-}
 
 interface Balance { currency: string; balance: string; available: string; }
 
@@ -129,36 +27,86 @@ const secondaryActions = [
 ];
 
 export default function Dashboard() {
-  const { user, updateUser } = useAuthStore();
-  const [balances, setBalances] = useState<Balance[]>([]);
-  const [loading,  setLoading]  = useState(true);
+  const { user, updateUser, accessToken } = useAuthStore();
+  const [balances,      setBalances]      = useState<Balance[]>([]);
+  const [loading,       setLoading]       = useState(true);
+  // Email verify modal (inline — no separate component needed)
+  const [showOtpModal,  setShowOtpModal]  = useState(false);
+  const [otp,           setOtp]           = useState('');
+  const [otpLoading,    setOtpLoading]    = useState(false);
+  const [otpResending,  setOtpResending]  = useState(false);
   const navigate = useNavigate();
 
   useEffect(() => {
-    // Fetch balances and sync profile in parallel.
-    // The profile sync keeps kyc_status and email_verified fresh so admin
-    // approvals are reflected immediately without a logout/login.
     Promise.all([
       api.get('/me/balance'),
       api.get('/me/profile'),
     ]).then(([balRes, profileRes]) => {
       setBalances(balRes.data.data?.balances ?? []);
       const u = profileRes.data.data;
-      updateUser({ kyc_status: u.kyc_status, email_verified: u.email_verified });
+      updateUser({ kyc_status: u.kyc_status, email_verified: u.email_verified, has_pin: u.has_pin });
     }).catch(() => {
-      // Fallback: at least try to load balances independently
       api.get('/me/balance')
         .then(r => setBalances(r.data.data?.balances ?? []))
         .catch(() => toast('Failed to load balances', 'err'));
     }).finally(() => setLoading(false));
   }, [updateUser]);
 
-  // totalUsd reserved for future portfolio value widget
+  async function handleVerifyEmail(e: React.FormEvent) {
+    e.preventDefault();
+    if (!accessToken) return;
+    setOtpLoading(true);
+    try {
+      await axios.post(`${API_BASE}/auth/verify-email`,
+        { otp: otp.replace(/\s/g, '') },
+        { headers: { Authorization: `Bearer ${accessToken}` } });
+      updateUser({ email_verified: true });
+      toast('Email verified! ✅');
+      setShowOtpModal(false);
+    } catch (err: unknown) {
+      toast((axios.isAxiosError(err) && err.response?.data?.message) || 'Incorrect code', 'err');
+    } finally { setOtpLoading(false); }
+  }
+
+  async function handleResendOtp() {
+    if (!accessToken || otpResending) return;
+    setOtpResending(true);
+    try {
+      await axios.post(`${API_BASE}/auth/resend-otp`, {}, { headers: { Authorization: `Bearer ${accessToken}` } });
+      toast('New code sent — check your email.');
+    } catch (err: unknown) {
+      toast((axios.isAxiosError(err) && err.response?.data?.message) || 'Could not resend. Try again.', 'err');
+    } finally { setOtpResending(false); }
+  }
+
+  // Build action items list — shown at top of dashboard
+  type ActionItem = { key: string; icon: string; title: string; desc: string; cta?: string; onPress?: () => void };
+  const actionItems: ActionItem[] = [
+    ...(user?.email_verified === false ? [{
+      key: 'email', icon: '📧', title: 'Verify your email',
+      desc: 'Required before making any transaction',
+      cta: 'Verify', onPress: () => { setOtp(''); setShowOtpModal(true); },
+    }] : []),
+    ...(user?.kyc_status === 'none' ? [{
+      key: 'kyc', icon: '🪪', title: 'Complete KYC',
+      desc: 'Unlock bank transfers & currency exchange',
+      cta: 'Start', onPress: () => navigate('/profile'),
+    }] : []),
+    ...(user?.kyc_status === 'pending' ? [{
+      key: 'kyc-pending', icon: '⏳', title: 'KYC under review',
+      desc: 'Usually 24 hours. Bank transfers enabled once approved.',
+    }] : []),
+    ...(!user?.has_pin ? [{
+      key: 'pin', icon: '🔐', title: 'Set transaction PIN',
+      desc: 'Required before sending or exchanging money',
+      cta: 'Set PIN', onPress: () => navigate('/profile'),
+    }] : []),
+  ];
 
   return (
     <div style={{ maxWidth: 800 }}>
       {/* Greeting */}
-      <div style={{ marginBottom: '2rem' }}>
+      <div style={{ marginBottom: '1.5rem' }}>
         <div style={{ fontSize: '.72rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.1em', color: 'var(--muted)', marginBottom: '.4rem' }}>
           Good {getGreeting()}
         </div>
@@ -171,34 +119,58 @@ export default function Dashboard() {
         </h1>
       </div>
 
-      {/* Email verification banner */}
-      {user && user.email_verified === false && (
-        <EmailVerifyBanner />
+      {/* Unified action items */}
+      {actionItems.length > 0 && (
+        <div className="card" style={{ marginBottom: '1.5rem', padding: '1rem 1.2rem', borderColor: 'rgba(245,158,11,0.3)', background: 'rgba(245,158,11,0.05)' }}>
+          <div style={{ fontSize: '.7rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.1em', color: 'var(--warn)', marginBottom: '.8rem' }}>
+            {actionItems.length} action{actionItems.length > 1 ? 's' : ''} needed
+          </div>
+          {actionItems.map((item, i) => (
+            <div key={item.key} style={{ display: 'flex', alignItems: 'center', gap: '.8rem', padding: '.55rem 0', borderBottom: i < actionItems.length - 1 ? '1px solid rgba(255,255,255,0.07)' : 'none' }}>
+              <span style={{ fontSize: '1.2rem', width: 28, textAlign: 'center', flexShrink: 0 }}>{item.icon}</span>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontWeight: 600, fontSize: '.88rem' }}>{item.title}</div>
+                <div style={{ fontSize: '.75rem', color: 'var(--muted)', marginTop: '.1rem' }}>{item.desc}</div>
+              </div>
+              {item.cta && item.onPress && (
+                <button className="btn btn-sm btn-primary" style={{ flexShrink: 0 }} onClick={item.onPress}>
+                  {item.cta}
+                </button>
+              )}
+            </div>
+          ))}
+        </div>
       )}
 
-      {/* KYC banner */}
-      {user?.kyc_status !== 'approved' && (
-        <div style={{
-          background: 'rgba(255,165,0,.08)', border: '1px solid rgba(255,165,0,.3)',
-          borderRadius: 'var(--radius)', padding: '1rem 1.2rem',
-          marginBottom: '1.5rem', display: 'flex', alignItems: 'center',
-          justifyContent: 'space-between', gap: '1rem', flexWrap: 'wrap',
-        }}>
-          <div>
-            <strong style={{ color: 'var(--warn)' }}>
-              {user?.kyc_status === 'pending' ? '⏳ KYC under review' : '⚠️ Complete your KYC'}
-            </strong>
-            <div style={{ fontSize: '.84rem', color: 'var(--muted)', marginTop: '.2rem' }}>
-              {user?.kyc_status === 'pending'
-                ? 'Your identity verification is being reviewed. Bank transfers will be enabled once approved.'
-                : 'Verify your identity to unlock bank transfers and currency exchange.'}
+      {/* Email OTP modal */}
+      {showOtpModal && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.72)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 9999, padding: '1rem' }}>
+          <div className="card" style={{ width: '100%', maxWidth: 360 }}>
+            <div style={{ textAlign: 'center', marginBottom: '1.4rem' }}>
+              <div style={{ fontSize: '2rem', marginBottom: '.4rem' }}>📧</div>
+              <div style={{ fontWeight: 700, marginBottom: '.3rem' }}>Verify your email</div>
+              <div style={{ fontSize: '.84rem', color: 'var(--muted)' }}>Enter the 6-digit code sent when you registered</div>
+            </div>
+            <form onSubmit={handleVerifyEmail}>
+              <input type="text" inputMode="numeric" autoComplete="one-time-code" maxLength={6}
+                placeholder="000000" value={otp} onChange={e => setOtp(e.target.value.replace(/\D/g, ''))}
+                style={{ textAlign: 'center', fontSize: '1.6rem', letterSpacing: '0.3em', fontFamily: 'monospace', marginBottom: '1rem' }}
+                required />
+              <div style={{ display: 'flex', gap: '.6rem', marginBottom: '1rem' }}>
+                <button type="button" className="btn" style={{ flex: 1 }} onClick={() => setShowOtpModal(false)}>Cancel</button>
+                <button type="submit" className="btn btn-primary" style={{ flex: 2 }} disabled={otpLoading || otp.length !== 6}>
+                  {otpLoading ? <span className="spinner" /> : 'Verify'}
+                </button>
+              </div>
+            </form>
+            <div style={{ textAlign: 'center', fontSize: '.82rem', color: 'var(--muted)' }}>
+              Didn't get it?{' '}
+              <button type="button" onClick={handleResendOtp} disabled={otpResending}
+                style={{ background: 'none', border: 'none', color: 'var(--accent)', cursor: 'pointer', fontSize: 'inherit', textDecoration: 'underline' }}>
+                {otpResending ? 'Sending…' : 'Resend code'}
+              </button>
             </div>
           </div>
-          {user?.kyc_status === 'none' && (
-            <button className="btn btn-sm" style={{ background: 'var(--warn)', color: '#000', whiteSpace: 'nowrap' }} onClick={() => navigate('/profile')}>
-              Verify Now
-            </button>
-          )}
         </div>
       )}
 

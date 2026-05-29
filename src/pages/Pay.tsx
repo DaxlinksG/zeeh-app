@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import api from '../lib/api';
 import { useAuthStore } from '../store/authStore';
@@ -55,14 +55,29 @@ export default function Pay() {
   const [done,      setDone]      = useState(false);
   const [showPin,   setShowPin]   = useState(false);
   const [pinError,  setPinError]  = useState('');
+  const [available, setAvailable] = useState<string | null>(null);
+  const [balLoading,setBalLoading]= useState(false);
+
+  // Fetch available balance whenever currency changes
+  useEffect(() => {
+    setAvailable(null);
+    setBalLoading(true);
+    api.get(`/me/balance/${currency}`)
+      .then(r => setAvailable(r.data.data?.available ?? '0'))
+      .catch(() => setAvailable(null))
+      .finally(() => setBalLoading(false));
+  }, [currency]);
+
+  const isInsufficient = available !== null && amount !== '' && parseFloat(amount) > parseFloat(available);
 
   function setField(key: string, val: string) {
     setFields(f => ({ ...f, [key]: val }));
   }
 
-  // Form submit → show PIN modal (validates fields first)
+  // Form submit → validate balance, then show PIN modal
   function handleFormSubmit(e: React.FormEvent) {
     e.preventDefault();
+    if (isInsufficient) return;
     setPinError('');
     setShowPin(true);
   }
@@ -118,6 +133,19 @@ export default function Pay() {
       )}
 
       <form className="card" onSubmit={handleFormSubmit}>
+        {/* Balance indicator */}
+        <div style={{ marginBottom: '.8rem', padding: '.7rem 1rem', background: 'var(--surface2)', borderRadius: 10, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <span style={{ fontSize: '.78rem', color: 'var(--muted)', fontWeight: 600 }}>Your {currency} balance</span>
+          <span style={{ fontWeight: 700, fontSize: '.92rem', color: isInsufficient ? 'var(--danger)' : 'var(--accent2)' }}>
+            {balLoading ? '…' : available !== null ? `${parseFloat(available).toLocaleString('en-CA', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${currency}` : '—'}
+          </span>
+        </div>
+        {isInsufficient && (
+          <div style={{ marginBottom: '.8rem', padding: '.6rem 1rem', background: 'rgba(244,63,94,0.1)', border: '1px solid rgba(244,63,94,0.25)', borderRadius: 8, fontSize: '.82rem', color: 'var(--danger)', fontWeight: 600 }}>
+            ⚠️ Insufficient balance — you have {parseFloat(available!).toLocaleString('en-CA', { minimumFractionDigits: 2 })} {currency} available
+          </div>
+        )}
+
         {/* Currency + Amount */}
         <div style={{ display: 'grid', gridTemplateColumns: '110px 1fr', gap: '.8rem', marginBottom: '1rem' }}>
           <div className="form-group" style={{ marginBottom: 0 }}>
@@ -150,7 +178,7 @@ export default function Pay() {
           <input value={reference} onChange={e => setReference(e.target.value)} placeholder="Your reference" />
         </div>
 
-        <button className="btn btn-success btn-full" disabled={needsKyc} style={{ marginTop: '.5rem' }}>
+        <button className="btn btn-success btn-full" disabled={needsKyc || isInsufficient} style={{ marginTop: '.5rem' }}>
           {`Send ${currency}${amount ? ' ' + amount : ''}`}
         </button>
       </form>

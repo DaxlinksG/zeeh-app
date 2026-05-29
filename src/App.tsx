@@ -1,5 +1,5 @@
 import { BrowserRouter, Routes, Route, Navigate, useNavigate, useLocation } from 'react-router-dom';
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import { useAuthStore } from './store/authStore';
 import Layout from './components/Layout';
 import { ToastContainer } from './components/Toast';
@@ -16,27 +16,45 @@ import Profile         from './pages/Profile';
 import Beneficiaries   from './pages/Beneficiaries';
 
 /** Intercepts the Android hardware back button.
- *  - Go back if there's history
- *  - Exit the app if on a root screen (dashboard, auth)
+ *
+ * Registered ONCE via empty deps. Uses refs for navigate + pathname
+ * so the closure always sees fresh values without re-registering
+ * (re-registering caused duplicate listeners firing on every navigation).
  */
 function AndroidBackHandler() {
-  const navigate  = useNavigate();
-  const location  = useLocation();
-  const rootPaths = ['/dashboard', '/'];
+  const navigate     = useNavigate();
+  const location     = useLocation();
+  const navigateRef  = useRef(navigate);
+  const pathRef      = useRef(location.pathname);
+  const ROOT_PATHS   = ['/dashboard', '/'];
+
+  // Keep refs current
+  useEffect(() => { navigateRef.current = navigate; }, [navigate]);
+  useEffect(() => { pathRef.current = location.pathname; }, [location.pathname]);
 
   useEffect(() => {
+    let mounted = true;
     let handle: { remove: () => void } | null = null;
+
     import('@capacitor/app').then(({ App: CapApp }) => {
+      if (!mounted) return;
       CapApp.addListener('backButton', ({ canGoBack }) => {
-        if (canGoBack && !rootPaths.includes(location.pathname)) {
-          navigate(-1);
+        if (canGoBack && !ROOT_PATHS.includes(pathRef.current)) {
+          navigateRef.current(-1);
         } else {
           CapApp.exitApp();
         }
-      }).then(h => { handle = h; });
+      }).then(h => {
+        if (!mounted) h.remove();   // component unmounted before promise resolved
+        else handle = h;
+      });
     });
-    return () => { handle?.remove(); };
-  }, [location.pathname, navigate]);
+
+    return () => {
+      mounted = false;
+      handle?.remove();
+    };
+  }, []); // ← empty: register exactly once for the lifetime of the app
 
   return null;
 }

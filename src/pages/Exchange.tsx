@@ -17,8 +17,19 @@ export default function Exchange() {
   const [done,    setDone]    = useState<{ from_amount: number; to_amount: number; rate: number } | null>(null);
   const [showPin, setShowPin] = useState(false);
   const [pinError, setPinError] = useState('');
+  const [available, setAvailable] = useState<string | null>(null);
 
   const needsKyc = user?.kyc_status !== 'approved';
+
+  // Fetch balance for the source currency
+  useEffect(() => {
+    setAvailable(null);
+    api.get(`/me/balance/${from}`)
+      .then(r => setAvailable(r.data.data?.available ?? '0'))
+      .catch(() => setAvailable(null));
+  }, [from]);
+
+  const isInsufficient = available !== null && amount !== '' && parseFloat(amount) > parseFloat(available);
 
   // Fetch rate when from/to changes
   useEffect(() => {
@@ -82,6 +93,19 @@ export default function Exchange() {
       )}
 
       <div className="card">
+        {/* Balance indicator */}
+        <div style={{ marginBottom: '1rem', padding: '.7rem 1rem', background: 'var(--surface2)', borderRadius: 10, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <span style={{ fontSize: '.78rem', color: 'var(--muted)', fontWeight: 600 }}>Your {from} balance</span>
+          <span style={{ fontWeight: 700, fontSize: '.92rem', color: isInsufficient ? 'var(--danger)' : 'var(--accent2)' }}>
+            {available !== null ? `${parseFloat(available).toLocaleString('en-CA', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${from}` : '—'}
+          </span>
+        </div>
+        {isInsufficient && (
+          <div style={{ marginBottom: '.8rem', padding: '.6rem 1rem', background: 'rgba(244,63,94,0.1)', border: '1px solid rgba(244,63,94,0.25)', borderRadius: 8, fontSize: '.82rem', color: 'var(--danger)', fontWeight: 600 }}>
+            ⚠️ Insufficient balance — you have {parseFloat(available!).toLocaleString('en-CA', { minimumFractionDigits: 2 })} {from}
+          </div>
+        )}
+
         {/* From */}
         <div className="form-group">
           <label>You Send</label>
@@ -127,7 +151,7 @@ export default function Exchange() {
 
         <button
           className="btn btn-success btn-full"
-          disabled={!amount || !rate || from === to || needsKyc || loading}
+          disabled={!amount || !rate || from === to || needsKyc || isInsufficient}
           onClick={() => { setPinError(''); setShowPin(true); }}
         >
           {`Exchange ${from} → ${to}`}

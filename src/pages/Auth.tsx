@@ -20,8 +20,10 @@ export default function Auth() {
   const accessToken = useAuthStore(s => s.accessToken);
 
   /* ── LOGIN ────────────────────────────────────────────────────────────── */
-  const [loginEmail, setLoginEmail] = useState('');
-  const [loginPass,  setLoginPass]  = useState('');
+  const [loginEmail,   setLoginEmail]   = useState('');
+  const [loginPass,    setLoginPass]    = useState('');
+  const [showLoginPw,  setShowLoginPw]  = useState(false);
+  const [showRegPw,    setShowRegPw]    = useState(false);
 
   async function handleLogin(e: React.FormEvent) {
     e.preventDefault();
@@ -236,7 +238,13 @@ export default function Auth() {
                     Forgot password?
                   </button>
                 </label>
-                <input type="password" required value={loginPass} onChange={e => setLoginPass(e.target.value)} placeholder="••••••••" />
+                <div style={{ position: 'relative' }}>
+                  <input type={showLoginPw ? 'text' : 'password'} required value={loginPass} onChange={e => setLoginPass(e.target.value)} placeholder="••••••••" style={{ paddingRight: '3rem' }} />
+                  <button type="button" onClick={() => setShowLoginPw(v => !v)}
+                    style={{ position: 'absolute', right: '1rem', top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', cursor: 'pointer', fontSize: '1rem', color: 'var(--muted)', padding: 0, lineHeight: 1 }}>
+                    {showLoginPw ? '🙈' : '👁️'}
+                  </button>
+                </div>
               </div>
               <button className="btn btn-primary btn-full" disabled={loading} style={{ marginTop: '.5rem' }}>
                 {loading ? <span className="spinner" /> : 'Sign In'}
@@ -260,7 +268,13 @@ export default function Auth() {
               </div>
               <div className="form-group">
                 <label>Password</label>
-                <input type="password" required value={reg.password} onChange={e => setReg(r => ({ ...r, password: e.target.value }))} placeholder="Min. 8 characters" />
+                <div style={{ position: 'relative' }}>
+                  <input type={showRegPw ? 'text' : 'password'} required value={reg.password} onChange={e => setReg(r => ({ ...r, password: e.target.value }))} placeholder="Min. 8 characters" style={{ paddingRight: '3rem' }} />
+                  <button type="button" onClick={() => setShowRegPw(v => !v)}
+                    style={{ position: 'absolute', right: '1rem', top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', cursor: 'pointer', fontSize: '1rem', color: 'var(--muted)', padding: 0, lineHeight: 1 }}>
+                    {showRegPw ? '🙈' : '👁️'}
+                  </button>
+                </div>
               </div>
               <div className="grid-2">
                 <div className="form-group">

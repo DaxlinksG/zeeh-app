@@ -10,6 +10,7 @@ interface AuthUser {
   last_name:      string;
   kyc_status:     string;
   email_verified?: boolean;
+  has_pin?:        boolean;
 }
 
 interface AuthState {
