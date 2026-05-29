@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import api from '../lib/api';
 import { useAuthStore } from '../store/authStore';
 import { toast } from '../components/Toast';
+import { type ThemePreference, getThemePreference, setTheme } from '../lib/theme';
 
 type KycStatus = 'none' | 'pending' | 'approved' | 'rejected';
 
@@ -21,10 +22,22 @@ const ID_TYPES = [
 
 type Tab = 'profile' | 'kyc' | 'security';
 
+const THEME_OPTIONS: { value: ThemePreference; label: string; icon: string }[] = [
+  { value: 'dark',   label: 'Dark',   icon: '🌙' },
+  { value: 'system', label: 'Auto',   icon: '💻' },
+  { value: 'light',  label: 'Light',  icon: '☀️' },
+];
+
 export default function Profile() {
   const { user, updateUser } = useAuthStore();
   const [loading, setLoading] = useState(false);
   const [tab,     setTab]     = useState<Tab>('profile');
+  const [themePref, setThemePref] = useState<ThemePreference>(getThemePreference);
+
+  function handleTheme(pref: ThemePreference) {
+    setThemePref(pref);
+    setTheme(pref);
+  }
 
   // Profile form
   const [profile, setProfile] = useState({ first_name: user?.first_name ?? '', last_name: user?.last_name ?? '', phone: '', country: '' });
@@ -127,6 +140,38 @@ export default function Profile() {
   return (
     <div style={{ maxWidth: 560 }}>
       <h1 style={{ fontSize: '1.4rem', fontWeight: 700, marginBottom: '1.6rem' }}>Profile & KYC</h1>
+
+      {/* Appearance / Theme */}
+      <div className="card" style={{ marginBottom: '1.4rem', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '1rem', flexWrap: 'wrap' }}>
+        <div>
+          <div style={{ fontWeight: 600, marginBottom: '.15rem' }}>Appearance</div>
+          <div style={{ fontSize: '.82rem', color: 'var(--muted)' }}>Follows your device by default</div>
+        </div>
+        <div style={{ display: 'flex', gap: '.25rem', background: 'var(--bg)', borderRadius: 100, padding: '.3rem' }}>
+          {THEME_OPTIONS.map(({ value, label, icon }) => (
+            <button
+              key={value}
+              onClick={() => handleTheme(value)}
+              style={{
+                padding: '.38rem .85rem',
+                borderRadius: 100,
+                border: 'none',
+                background: themePref === value ? 'var(--surface2)' : 'transparent',
+                color: themePref === value ? 'var(--text)' : 'var(--muted)',
+                cursor: 'pointer',
+                fontFamily: 'inherit',
+                fontSize: '.8rem',
+                fontWeight: 600,
+                transition: 'all .15s ease',
+                boxShadow: themePref === value ? '0 2px 8px rgba(139,92,246,0.15)' : 'none',
+                display: 'flex', alignItems: 'center', gap: '.3rem',
+              }}
+            >
+              <span>{icon}</span> {label}
+            </button>
+          ))}
+        </div>
+      </div>
 
       {/* KYC status card */}
       <div className="card" style={{ marginBottom: '1.4rem', display: 'flex', gap: '1rem', alignItems: 'flex-start' }}>
