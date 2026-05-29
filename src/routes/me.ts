@@ -21,7 +21,11 @@ import crypto from 'crypto';
 import {
   getUserById, getUserByEmail,
   updateUserProfile, submitKyc, getKyc,
+  setTransactionPin, verifyTransactionPin, hasPinSet,
 } from '../lib/userStore';
+import {
+  addBeneficiary, getBeneficiaries, isBeneficiary, removeBeneficiary,
+} from '../lib/beneficiaryStore';
 import {
   getBalance, getAllBalances, getTransactions,
   debitBalance, creditBalance, refundBalance,
@@ -31,7 +35,7 @@ import {
 import { gtp } from '../lib/gtpClient';
 import { buildQuote, calcConversion } from '../lib/spreadEngine';
 import { listDepositInstructions } from '../lib/depositConfig';
-import { requireKyc, requireEmailVerified } from '../middleware/userAuth';
+import { requireKyc, requireEmailVerified, requirePin } from '../middleware/userAuth';
 import { userTransferLimiter } from '../middleware/rateLimiter';
 import { auditLog } from '../middleware/logger';
 import {
@@ -76,14 +80,16 @@ router.get('/profile', async (req: Request, res: Response, next: NextFunction) =
     res.json({
       success: true,
       data: {
-        user_id:    user.user_id,
-        email:      user.email,
-        first_name: user.first_name,
-        last_name:  user.last_name,
-        phone:      user.phone,
-        country:    user.country,
-        kyc_status: user.kyc_status,
-        created_at: user.created_at,
+        user_id:        user.user_id,
+        email:          user.email,
+        first_name:     user.first_name,
+        last_name:      user.last_name,
+        phone:          user.phone,
+        country:        user.country,
+        kyc_status:     user.kyc_status,
+        email_verified: user.email_verified ?? false,
+        has_pin:        !!user.transaction_pin_hash,
+        created_at:     user.created_at,
         kyc: kyc ? {
           date_of_birth: kyc.date_of_birth,
           nationality:   kyc.nationality,
@@ -304,6 +310,133 @@ router.get('/users/search', async (req: Request, res: Response, next: NextFuncti
   } catch (err) { next(err); }
 });
 
+// ── Transaction PIN management ─────────────────────────────────────────────
+
+// Set PIN for the first time (no existing PIN must be present)
+router.post('/pin/set', requireEmailVerified, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { pin } = req.body ?? {};
+    const cleanPin = String(pin ?? '').replace(/\D/g, '');
+    if (cleanPin.length !== 4) {
+      res.status(400).json({ success: false, message: 'PIN must be exactly 4 digits', code: 'INVALID_PIN' }); return;
+    }
+    if (await hasPinSet(req.user!.user_id)) {
+      res.status(409).json({ success: false, message: 'A PIN is already set. Use /me/pin/change to update it.', code: 'PIN_ALREADY_SET' }); return;
+    }
+    await setTransactionPin(req.user!.user_id, cleanPin);
+    res.json({ success: true, message: 'Transaction PIN set successfully' });
+  } catch (err) { next(err); }
+});
+
+// Change existing PIN — requires the current PIN as second factor
+router.post('/pin/change', requireEmailVerified, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { current_pin, new_pin } = req.body ?? {};
+    const currentClean = String(current_pin ?? '').replace(/\D/g, '');
+    const newClean     = String(new_pin     ?? '').replace(/\D/g, '');
+
+    if (newClean.length !== 4) {
+      res.status(400).json({ success: false, message: 'New PIN must be exactly 4 digits', code: 'INVALID_PIN' }); return;
+    }
+
+    const result = await verifyTransactionPin(req.user!.user_id, currentClean);
+    if (result === 'no_pin') {
+      res.status(400).json({ success: false, message: 'No PIN set yet. Use /me/pin/set first.', code: 'PIN_NOT_SET' }); return;
+    }
+    if (result === 'locked') {
+      res.status(429).json({ success: false, message: 'Too many incorrect PIN attempts. Try again in 15 minutes.', code: 'PIN_LOCKED' }); return;
+    }
+    if (result === 'invalid') {
+      res.status(403).json({ success: false, message: 'Current PIN is incorrect', code: 'INCORRECT_PIN' }); return;
+    }
+
+    await setTransactionPin(req.user!.user_id, newClean);
+    res.json({ success: true, message: 'Transaction PIN updated successfully' });
+  } catch (err) { next(err); }
+});
+
+// Reset PIN using account password (for forgot-PIN scenario)
+router.post('/pin/reset', requireEmailVerified, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { password, new_pin } = req.body ?? {};
+    const newClean = String(new_pin ?? '').replace(/\D/g, '');
+
+    if (newClean.length !== 4) {
+      res.status(400).json({ success: false, message: 'New PIN must be exactly 4 digits', code: 'INVALID_PIN' }); return;
+    }
+
+    const { verifyPassword } = await import('../lib/userStore');
+    const user = await getUserById(req.user!.user_id);
+    if (!user) { res.status(404).json({ success: false, message: 'User not found' }); return; }
+
+    const validPassword = await verifyPassword(user, String(password ?? ''));
+    if (!validPassword) {
+      res.status(403).json({ success: false, message: 'Incorrect password', code: 'INCORRECT_PASSWORD' }); return;
+    }
+
+    await setTransactionPin(req.user!.user_id, newClean);
+    res.json({ success: true, message: 'Transaction PIN reset successfully' });
+  } catch (err) { next(err); }
+});
+
+// ── Beneficiaries ──────────────────────────────────────────────────────────
+
+router.get('/beneficiaries', requireEmailVerified, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const beneficiaries = await getBeneficiaries(req.user!.user_id);
+    res.json({ success: true, data: { beneficiaries } });
+  } catch (err) { next(err); }
+});
+
+router.post('/beneficiaries', requireEmailVerified, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { email } = req.body ?? {};
+    if (!email) { res.status(400).json({ success: false, message: 'email is required' }); return; }
+
+    const target = await getUserByEmail(String(email));
+    if (!target) { res.status(404).json({ success: false, message: 'No Zeeh user found with that email' }); return; }
+    if (target.user_id === req.user!.user_id) {
+      res.status(400).json({ success: false, message: 'You cannot add yourself as a beneficiary' }); return;
+    }
+
+    await addBeneficiary(req.user!.user_id, {
+      beneficiary_id: target.user_id,
+      email:          target.email,
+      first_name:     target.first_name,
+      last_name:      target.last_name,
+    }).catch((err: unknown) => {
+      if ((err as { name?: string }).name === 'ConditionalCheckFailedException') {
+        throw Object.assign(new Error('Already saved'), { _status: 409, _code: 'ALREADY_BENEFICIARY' });
+      }
+      throw err;
+    });
+
+    res.status(201).json({
+      success: true,
+      message: `${target.first_name} ${target.last_name} saved as a beneficiary`,
+      data: {
+        beneficiary_id: target.user_id,
+        email:          target.email,
+        first_name:     target.first_name,
+        last_name:      target.last_name,
+      },
+    });
+  } catch (err: unknown) {
+    const e = err as { _status?: number; _code?: string; message?: string };
+    if (e._status) {
+      res.status(e._status).json({ success: false, message: e.message, code: e._code }); return;
+    }
+    next(err);
+  }
+});
+
+router.delete('/beneficiaries/:beneficiary_id', requireEmailVerified, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    await removeBeneficiary(req.user!.user_id, req.params.beneficiary_id);
+    res.json({ success: true, message: 'Beneficiary removed' });
+  } catch (err) { next(err); }
+});
+
 // ── P2P Send ───────────────────────────────────────────────────────────────
 const sendSchema = z.object({
   recipient_email: z.string().email(),
@@ -312,7 +445,7 @@ const sendSchema = z.object({
   note:            z.string().max(255).optional(),
 });
 
-router.post('/send', requireEmailVerified, userTransferLimiter, async (req: Request, res: Response, next: NextFunction) => {
+router.post('/send', requireEmailVerified, requirePin, userTransferLimiter, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const parsed = sendSchema.safeParse(req.body);
     if (!parsed.success) {
@@ -336,6 +469,16 @@ router.post('/send', requireEmailVerified, userTransferLimiter, async (req: Requ
     }
     if (recipient.user_id === senderId) {
       res.status(400).json({ success: false, message: 'Cannot send to yourself' }); return;
+    }
+
+    // Beneficiary gate — sender must have explicitly saved this recipient
+    const trusted = await isBeneficiary(senderId, recipient.user_id);
+    if (!trusted) {
+      res.status(403).json({
+        success: false,
+        message: `${recipient.first_name} ${recipient.last_name} is not in your beneficiary list. Add them in Beneficiaries before sending.`,
+        code:    'NOT_A_BENEFICIARY',
+      }); return;
     }
 
     const reference = `P2P-${Date.now()}`;
@@ -397,7 +540,7 @@ const transferSchema = z.object({
   recipient_uid:    z.string().optional(),
 });
 
-router.post('/transfer', requireEmailVerified, requireKyc, userTransferLimiter, async (req: Request, res: Response, next: NextFunction) => {
+router.post('/transfer', requireEmailVerified, requirePin, requireKyc, userTransferLimiter, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const parsed = transferSchema.safeParse(req.body);
     if (!parsed.success) {
@@ -472,7 +615,7 @@ const swapSchema = z.object({
   reference:     z.string().max(100).optional(),
 });
 
-router.post('/swap', requireEmailVerified, requireKyc, userTransferLimiter, async (req: Request, res: Response, next: NextFunction) => {
+router.post('/swap', requireEmailVerified, requirePin, requireKyc, userTransferLimiter, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const parsed = swapSchema.safeParse(req.body);
     if (!parsed.success) {

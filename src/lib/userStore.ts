@@ -46,6 +46,10 @@ export interface User {
   // Password reset token (stored hashed, 30-min expiry)
   reset_token_hash?:    string;
   reset_token_expires?: number;
+  // Transaction PIN (bcrypt hash). Required before any send/swap/transfer.
+  transaction_pin_hash?:  string;
+  pin_failed_attempts?:   number;
+  pin_locked_until?:      number; // Unix timestamp
 }
 
 export interface KycRecord {
@@ -322,6 +326,71 @@ export async function resetPassword(userId: string, newPassword: string): Promis
     UpdateExpression: 'SET password_hash = :h REMOVE reset_token_hash, reset_token_expires',
     ExpressionAttributeValues: { ':h': hash },
   }));
+}
+
+// ── Transaction PIN ────────────────────────────────────────────────────────
+// 4-digit numeric PIN, bcrypt-hashed, cost 10.
+// Failed attempts are tracked; 5 consecutive failures trigger a 15-min lockout.
+
+export async function setTransactionPin(userId: string, pin: string): Promise<void> {
+  const hash = await bcrypt.hash(pin, 10);
+  await db.send(new UpdateCommand({
+    TableName: USERS_TABLE,
+    Key: { user_id: userId },
+    UpdateExpression: 'SET transaction_pin_hash = :h REMOVE pin_failed_attempts, pin_locked_until',
+    ExpressionAttributeValues: { ':h': hash },
+  }));
+}
+
+export async function hasPinSet(userId: string): Promise<boolean> {
+  const result = await db.send(new GetCommand({
+    TableName: USERS_TABLE,
+    Key: { user_id: userId },
+  }));
+  return !!(result.Item as User | undefined)?.transaction_pin_hash;
+}
+
+export type PinVerifyResult = 'ok' | 'no_pin' | 'locked' | 'invalid';
+
+export async function verifyTransactionPin(userId: string, pin: string): Promise<PinVerifyResult> {
+  const result = await db.send(new GetCommand({
+    TableName: USERS_TABLE,
+    Key: { user_id: userId },
+  }));
+  const user = result.Item as User | undefined;
+  if (!user?.transaction_pin_hash) return 'no_pin';
+
+  // Lockout check
+  if (user.pin_locked_until && Math.floor(Date.now() / 1000) < user.pin_locked_until) return 'locked';
+
+  const match = await bcrypt.compare(pin, user.transaction_pin_hash);
+
+  if (!match) {
+    const attempts = (user.pin_failed_attempts ?? 0) + 1;
+    const lock     = attempts >= 5;
+    await db.send(new UpdateCommand({
+      TableName: USERS_TABLE,
+      Key: { user_id: userId },
+      UpdateExpression: lock
+        ? 'SET pin_failed_attempts = :a, pin_locked_until = :l'
+        : 'SET pin_failed_attempts = :a',
+      ExpressionAttributeValues: {
+        ':a': attempts,
+        ...(lock ? { ':l': Math.floor(Date.now() / 1000) + 15 * 60 } : {}),
+      },
+    })).catch(() => {});
+    return 'invalid';
+  }
+
+  // Success — clear failure counter
+  if (user.pin_failed_attempts) {
+    await db.send(new UpdateCommand({
+      TableName: USERS_TABLE,
+      Key: { user_id: userId },
+      UpdateExpression: 'REMOVE pin_failed_attempts, pin_locked_until',
+    })).catch(() => {});
+  }
+  return 'ok';
 }
 
 // ── Admin: suspend / unsuspend user ────────────────────────────────────────
