@@ -4,6 +4,9 @@ import api from '../lib/api';
 import { useAuthStore } from '../store/authStore';
 import { toast } from '../components/Toast';
 import { type ThemePreference, getThemePreference, setTheme } from '../lib/theme';
+import { KycWidget } from '@zeehdev/zeeh-kyc-react-sdk';
+
+const ZEEH_BUSINESS_ID = 'pk_live_94dfc311573e3a4f660d2464005ec51700f0039df7b21e5b2578cf47ddae26ee';
 
 type KycStatus = 'none' | 'pending' | 'approved' | 'rejected';
 
@@ -15,11 +18,8 @@ const KYC_STATUS_INFO: Record<KycStatus, { label: string; badge: string; desc: s
 };
 
 const COUNTRIES = ['Canada','Nigeria','United States','United Kingdom','Germany','France','Ghana','Kenya','South Africa','Other'];
-const ID_TYPES = [
-  { value: 'passport',         label: 'Passport' },
-  { value: 'drivers_license',  label: "Driver's License" },
-  { value: 'national_id',      label: 'National ID' },
-];
+// ID_TYPES kept for future use / manual KYC fallback
+// const ID_TYPES = [ ... ];
 
 type Tab = 'profile' | 'kyc' | 'security';
 
@@ -44,8 +44,9 @@ export default function Profile() {
   // Profile form
   const [profile, setProfile] = useState({ first_name: user?.first_name ?? '', last_name: user?.last_name ?? '', phone: '', country: '' });
 
-  // KYC form
-  const [kyc, setKyc] = useState({
+  // KYC form state kept for potential fallback — widget is primary path
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  const [_kyc, _setKyc] = useState({
     date_of_birth: '', nationality: '', id_type: 'passport', id_number: '',
     address: { street: '', city: '', state: '', country: '', postal_code: '' },
   });
@@ -122,19 +123,6 @@ export default function Profile() {
     finally { setLoading(false); }
   }
 
-  async function submitKyc(e: React.FormEvent) {
-    e.preventDefault();
-    setLoading(true);
-    try {
-      await api.post('/me/kyc', kyc);
-      updateUser({ kyc_status: 'pending' });
-      toast('KYC submitted! We will review within 24 hours.');
-      setTab('profile');
-    } catch (err: unknown) {
-      const msg = (err as { response?: { data?: { message?: string } } }).response?.data?.message ?? 'Submission failed';
-      toast(msg, 'err');
-    } finally { setLoading(false); }
-  }
 
   const kycStatus = (user?.kyc_status ?? 'none') as KycStatus;
   const kycInfo   = KYC_STATUS_INFO[kycStatus];
@@ -240,75 +228,42 @@ export default function Profile() {
           </button>
         </form>
       ) : tab === 'kyc' ? (
-        <form className="card" onSubmit={submitKyc}>
-          {kycStatus === 'approved' ? (
-            <div style={{ textAlign: 'center', padding: '2rem', color: 'var(--accent2)' }}>
-              <div style={{ fontSize: '3rem', marginBottom: '.6rem' }}>✅</div>
-              <div style={{ fontWeight: 600 }}>Identity Verified</div>
-              <div style={{ color: 'var(--muted)', fontSize: '.85rem', marginTop: '.3rem' }}>All features are unlocked.</div>
-            </div>
-          ) : kycStatus === 'pending' ? (
-            <div style={{ textAlign: 'center', padding: '2rem', color: 'var(--warn)' }}>
-              <div style={{ fontSize: '3rem', marginBottom: '.6rem' }}>⏳</div>
-              <div style={{ fontWeight: 600 }}>Under Review</div>
-              <div style={{ color: 'var(--muted)', fontSize: '.85rem', marginTop: '.3rem' }}>We'll notify you when it's done.</div>
-            </div>
-          ) : (
-            <>
-              <div className="grid-2">
-                <div className="form-group">
-                  <label>Date of Birth</label>
-                  <input type="date" required value={kyc.date_of_birth} onChange={e => setKyc(k => ({ ...k, date_of_birth: e.target.value }))} />
-                </div>
-                <div className="form-group">
-                  <label>Nationality</label>
-                  <input required value={kyc.nationality} onChange={e => setKyc(k => ({ ...k, nationality: e.target.value }))} placeholder="Canadian" />
-                </div>
-              </div>
-
-              <div className="grid-2">
-                <div className="form-group">
-                  <label>ID Type</label>
-                  <select value={kyc.id_type} onChange={e => setKyc(k => ({ ...k, id_type: e.target.value }))}>
-                    {ID_TYPES.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
-                  </select>
-                </div>
-                <div className="form-group">
-                  <label>ID Number</label>
-                  <input required value={kyc.id_number} onChange={e => setKyc(k => ({ ...k, id_number: e.target.value }))} placeholder="AB123456" />
-                </div>
-              </div>
-
-              <div style={{ fontSize: '.8rem', color: 'var(--muted)', marginBottom: '.8rem', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.05em' }}>Address</div>
-              <div className="form-group">
-                <label>Street</label>
-                <input required value={kyc.address.street} onChange={e => setKyc(k => ({ ...k, address: { ...k.address, street: e.target.value } }))} placeholder="123 Main St" />
-              </div>
-              <div className="grid-2">
-                <div className="form-group">
-                  <label>City</label>
-                  <input required value={kyc.address.city} onChange={e => setKyc(k => ({ ...k, address: { ...k.address, city: e.target.value } }))} />
-                </div>
-                <div className="form-group">
-                  <label>State / Province</label>
-                  <input required value={kyc.address.state} onChange={e => setKyc(k => ({ ...k, address: { ...k.address, state: e.target.value } }))} />
-                </div>
-                <div className="form-group">
-                  <label>Country</label>
-                  <input required value={kyc.address.country} onChange={e => setKyc(k => ({ ...k, address: { ...k.address, country: e.target.value } }))} />
-                </div>
-                <div className="form-group">
-                  <label>Postal Code</label>
-                  <input required value={kyc.address.postal_code} onChange={e => setKyc(k => ({ ...k, address: { ...k.address, postal_code: e.target.value } }))} />
-                </div>
-              </div>
-
-              <button className="btn btn-success btn-full" disabled={loading}>
-                {loading ? <span className="spinner" /> : 'Submit for Review'}
-              </button>
-            </>
-          )}
-        </form>
+        kycStatus === 'approved' ? (
+          <div className="card" style={{ textAlign: 'center', padding: '3rem' }}>
+            <div style={{ fontSize: '3.5rem', marginBottom: '.8rem' }}>✅</div>
+            <div style={{ fontWeight: 700, fontSize: '1.1rem', marginBottom: '.4rem' }}>Identity Verified</div>
+            <div style={{ color: 'var(--muted)', fontSize: '.88rem' }}>All features are unlocked.</div>
+          </div>
+        ) : kycStatus === 'pending' ? (
+          <div className="card" style={{ textAlign: 'center', padding: '3rem' }}>
+            <div style={{ fontSize: '3.5rem', marginBottom: '.8rem' }}>⏳</div>
+            <div style={{ fontWeight: 700, fontSize: '1.1rem', marginBottom: '.4rem' }}>Under Review</div>
+            <div style={{ color: 'var(--muted)', fontSize: '.88rem' }}>We'll notify you when it's done. Usually within 24 hours.</div>
+          </div>
+        ) : (
+          /* ── Zeeh KYC Widget ── */
+          <div style={{ borderRadius: 'var(--radius-lg)', overflow: 'hidden' }}>
+            <KycWidget
+              businessId={ZEEH_BUSINESS_ID}
+              environment="production"
+              defaultTheme="system"
+              showModeToggle={false}
+              onStepChange={step => console.log('[KYC step]', step)}
+              onComplete={async ({ sessionId }) => {
+                try {
+                  const res = await api.post('/me/kyc/widget-complete', { sessionId });
+                  const newStatus = res.data.data?.kyc_status ?? 'pending';
+                  updateUser({ kyc_status: newStatus });
+                  toast(newStatus === 'approved' ? 'Identity verified! ✅' : "KYC submitted — we'll review shortly.");
+                  setTab('profile');
+                } catch {
+                  toast('KYC completed but status update failed. Contact support.', 'err');
+                }
+              }}
+              onError={msg => toast(msg || 'KYC verification failed', 'err')}
+            />
+          </div>
+        )
       ) : (
         /* ── Security tab ── */
         <div className="card">
