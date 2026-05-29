@@ -1,5 +1,5 @@
 import { BrowserRouter, Routes, Route, Navigate, useNavigate, useLocation } from 'react-router-dom';
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useCallback } from 'react';
 import { useAuthStore } from './store/authStore';
 import Layout from './components/Layout';
 import { ToastContainer } from './components/Toast';
@@ -60,32 +60,48 @@ function AndroidBackHandler() {
   return null;
 }
 
-/** Checks session age on mount and every time the app comes to foreground.
- *  Logs the user out after 24 hours automatically. */
+/**
+ * Inactivity logout — 15 minutes with no interaction (standard Canadian banking).
+ * Tracks: click, touchstart, keypress.
+ * Also checks on Capacitor foreground resume so returning after a long pause logs out.
+ */
+const INACTIVITY_MS = 15 * 60 * 1000; // 15 minutes
+
 function SessionGuard() {
-  const { logout, isSessionExpired, user } = useAuthStore();
+  const { logout, user } = useAuthStore();
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  const resetTimer = useCallback(() => {
+    if (timerRef.current) clearTimeout(timerRef.current);
+    timerRef.current = setTimeout(logout, INACTIVITY_MS);
+  }, [logout]);
+
+  // Activity listeners
   useEffect(() => {
     if (!user) return;
-    if (isSessionExpired()) { logout(); return; }
+    const events = ['click', 'touchstart', 'keypress'] as const;
+    events.forEach(e => window.addEventListener(e, resetTimer, { passive: true }));
+    resetTimer(); // start the clock immediately on login
+    return () => {
+      events.forEach(e => window.removeEventListener(e, resetTimer));
+      if (timerRef.current) clearTimeout(timerRef.current);
+    };
+  }, [user, resetTimer]);
 
-    // Set a timer that fires exactly when the session expires
-    const { loginAt } = useAuthStore.getState();
-    const remaining = loginAt ? (loginAt + 24 * 60 * 60 * 1000) - Date.now() : 0;
-    if (remaining <= 0) { logout(); return; }
-    const timer = setTimeout(logout, remaining);
-    return () => clearTimeout(timer);
-  }, [user, logout, isSessionExpired]);
-
-  // Also check when the app comes back to the foreground (Capacitor)
+  // Foreground resume — if the user left the app for 15+ min, log out on return
   useEffect(() => {
     if (!user) return;
+    let lastBackground = 0;
     import('@capacitor/app').then(({ App: CapApp }) => {
       CapApp.addListener('appStateChange', ({ isActive }) => {
-        if (isActive && isSessionExpired()) logout();
+        if (!isActive) {
+          lastBackground = Date.now();
+        } else if (Date.now() - lastBackground > INACTIVITY_MS) {
+          logout();
+        }
       });
     });
-  }, [user, logout, isSessionExpired]);
+  }, [user, logout]);
 
   return null;
 }

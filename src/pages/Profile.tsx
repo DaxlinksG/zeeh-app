@@ -262,6 +262,10 @@ export default function Profile() {
               }}
               onError={msg => toast(msg || 'KYC verification failed', 'err')}
             />
+            {/* Desktop hint — mobile APK users will never see the QR gate */}
+            <div style={{ padding: '.6rem 1rem', background: 'rgba(139,92,246,0.07)', fontSize: '.78rem', color: 'var(--muted)', textAlign: 'center' }}>
+              📱 On desktop? Scan the QR code or tap <strong style={{ color: 'var(--text)' }}>Continue on Desktop</strong> to proceed here.
+            </div>
           </div>
         )
       ) : (
