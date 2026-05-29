@@ -114,7 +114,7 @@ export default function Profile() {
       await api.post('/me/kyc', kyc);
       updateUser({ kyc_status: 'pending' });
       toast('KYC submitted! We will review within 24 hours.');
-      setKycTab(false);
+      setTab('profile');
     } catch (err: unknown) {
       const msg = (err as { response?: { data?: { message?: string } } }).response?.data?.message ?? 'Submission failed';
       toast(msg, 'err');
