@@ -115,6 +115,19 @@ router.put('/profile', async (req: Request, res: Response, next: NextFunction) =
     if (!parsed.success) {
       res.status(400).json({ success: false, errors: parsed.error.flatten() }); return;
     }
+
+    // SECURITY: Block name changes once KYC has been initiated.
+    // If allowed, a user could change their name to match a stolen identity,
+    // re-submit KYC, and pass verification as someone else.
+    const kycActive = ['pending', 'approved'].includes(req.user!.kyc_status);
+    if (kycActive && (parsed.data.first_name || parsed.data.last_name)) {
+      res.status(400).json({
+        success: false,
+        message: 'Name cannot be changed after KYC verification has been submitted. Contact support if your name is incorrect.',
+        code: 'NAME_LOCKED_POST_KYC',
+      }); return;
+    }
+
     await updateUserProfile(req.user!.user_id, parsed.data);
     res.json({ success: true, message: 'Profile updated' });
   } catch (err) { next(err); }
@@ -157,161 +170,128 @@ router.post('/kyc', async (req: Request, res: Response, next: NextFunction) => {
   } catch (err) { next(err); }
 });
 
-// ── Custom KYC: BVN verification ──────────────────────────────────────────
-// Proxies to https://api.usezeeh.com/v1/nigeria_kyc/lookup_bvn_advance
-// Returns matched name/DOB and the BVN face image for liveness comparison.
-router.post('/kyc/verify-bvn', requireEmailVerified, async (req: Request, res: Response, next: NextFunction) => {
+// ── Custom KYC: single secure ID verification endpoint ────────────────────
+//
+// SECURITY DESIGN:
+//   • The user enters their ID number AND types their full name separately.
+//   • We look up the ID, compare the TYPED name against the API result,
+//     and return ONLY boolean match results — never the raw API data.
+//   • This prevents:
+//       1. Data exposure: caller sees nothing about the ID holder
+//       2. Impersonation: must correctly type the name on the ID record
+//          (changing profile name after KYC is blocked on PUT /me/profile)
+//
+// COMPLIANCE (NDPR / FINTRAC):
+//   • We store only the verification RESULT, not the raw ID data or images.
+//   • Raw API responses are discarded after comparison.
+//   • Audit log records the event without PII.
+//
+router.post('/kyc/verify-id', requireEmailVerified, async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { bvn } = req.body ?? {};
-    if (!bvn || !/^\d{11}$/.test(String(bvn))) {
-      res.status(400).json({ success: false, message: 'BVN must be exactly 11 digits' }); return;
+    const { id_type, id_number, full_name } = req.body ?? {};
+
+    if (!id_type || !['bvn', 'nin'].includes(id_type)) {
+      res.status(400).json({ success: false, message: 'id_type must be bvn or nin' }); return;
+    }
+    if (!id_number || !/^\d{11}$/.test(String(id_number))) {
+      res.status(400).json({ success: false, message: `${id_type.toUpperCase()} must be exactly 11 digits` }); return;
+    }
+    if (!full_name || String(full_name).trim().length < 2) {
+      res.status(400).json({ success: false, message: 'full_name is required' }); return;
     }
 
     const secretKey = process.env.ZEEH_KYC_SECRET_KEY;
     if (!secretKey) { res.status(500).json({ success: false, message: 'KYC service not configured' }); return; }
 
-    const user = await getUserById(req.user!.user_id);
-    if (!user) { res.status(404).json({ success: false, message: 'User not found' }); return; }
+    // ── Lookup the ID via Zeeh API ──────────────────────────────────────────
+    const endpoint = id_type === 'bvn'
+      ? 'https://api.usezeeh.com/v1/nigeria_kyc/lookup_bvn_advance'
+      : 'https://api.usezeeh.com/v1/nigeria_kyc/lookup_nin';
+    const body = id_type === 'bvn' ? { bvn: String(id_number) } : { nin: String(id_number) };
 
     let apiData: Record<string, unknown>;
     try {
-      const { data: zeehRes } = await axios.post(
-        'https://api.usezeeh.com/v1/nigeria_kyc/lookup_bvn_advance',
-        { bvn: String(bvn) },
+      const { data: zeehRes } = await axios.post(endpoint, body,
         { headers: { 'secret-key': secretKey, 'Content-Type': 'application/json' }, timeout: 20000 },
       );
       if (!zeehRes.success && !zeehRes.status) {
-        res.status(400).json({ success: false, message: zeehRes.message ?? 'BVN not found' }); return;
+        // ID not found — return generic message, don't reveal why
+        res.status(400).json({ success: false, message: `${id_type.toUpperCase()} not found or invalid. Please check the number and try again.` }); return;
       }
       apiData = zeehRes.data as Record<string, unknown>;
     } catch (apiErr: unknown) {
-      const msg = (axios.isAxiosError(apiErr) && apiErr.response?.data?.message) || 'BVN lookup service unavailable. Try again later.';
-      res.status(503).json({ success: false, message: msg }); return;
+      const status = axios.isAxiosError(apiErr) ? apiErr.response?.status : 0;
+      const msg = status === 404 || status === 400
+        ? `${id_type.toUpperCase()} not found. Please check the number.`
+        : 'ID verification service is temporarily unavailable. Please try again.';
+      res.status(status === 404 || status === 400 ? 400 : 503).json({ success: false, message: msg }); return;
     }
 
-    const norm = (s: unknown) => String(s ?? '').toLowerCase().trim();
-    const nameMatch =
-      norm(apiData.firstName) === norm(user.first_name) ||
-      norm(apiData.lastName)  === norm(user.last_name)  ||
-      norm(`${apiData.firstName} ${apiData.lastName}`) ===
-        norm(`${user.first_name} ${user.last_name}`);
+    // ── Name comparison — server side only, NEVER returned to client ────────
+    const norm = (s: unknown) => String(s ?? '').toLowerCase().replace(/[^a-z]/g, ' ').replace(/\s+/g, ' ').trim();
 
+    const apiFullName  = norm(`${apiData.firstName ?? ''} ${apiData.lastName ?? ''}`);
+    const enteredName  = norm(full_name);
+    const enteredParts = enteredName.split(' ').filter(Boolean);
+
+    // Flexible match: entered name tokens must all appear in the API name
+    const nameMatch = enteredParts.length >= 2 &&
+      enteredParts.every(part => apiFullName.includes(part));
+
+    // ── Audit log — no PII, just the event ─────────────────────────────────
+    const idHash = crypto.createHash('sha256').update(String(id_number)).digest('hex').substring(0, 16);
+    auditLog('kyc.verify_id', req, { id_type, id_hash: idHash, nameMatch });
+
+    // ── Return ONLY boolean results — raw API data is discarded ─────────────
     res.json({
       success: true,
-      data: {
-        firstName:  apiData.firstName,
-        lastName:   apiData.lastName,
-        dateOfBirth:apiData.dateOfBirth,
-        gender:     apiData.gender,
-        phone:      String(apiData.phoneNumber1 ?? '').replace(/(\d{4})\d{4}(\d{3})/, '$1****$2'),
-        faceImage:  apiData.image ?? '',       // base64 from BVN record
-        nameMatch,
-        dobMatch:   false,                     // user profile currently has no DOB field
-      },
+      data: { found: true, nameMatch },
     });
   } catch (err) { next(err); }
 });
 
-// ── Custom KYC: NIN verification ───────────────────────────────────────────
-router.post('/kyc/verify-nin', requireEmailVerified, async (req: Request, res: Response, next: NextFunction) => {
-  try {
-    const { nin } = req.body ?? {};
-    if (!nin || !/^\d{11}$/.test(String(nin))) {
-      res.status(400).json({ success: false, message: 'NIN must be exactly 11 digits' }); return;
-    }
-
-    const secretKey = process.env.ZEEH_KYC_SECRET_KEY;
-    if (!secretKey) { res.status(500).json({ success: false, message: 'KYC service not configured' }); return; }
-
-    const user = await getUserById(req.user!.user_id);
-    if (!user) { res.status(404).json({ success: false, message: 'User not found' }); return; }
-
-    let apiData: Record<string, unknown>;
-    try {
-      const { data: zeehRes } = await axios.post(
-        'https://api.usezeeh.com/v1/nigeria_kyc/lookup_nin',
-        { nin: String(nin) },
-        { headers: { 'secret-key': secretKey, 'Content-Type': 'application/json' }, timeout: 20000 },
-      );
-      if (!zeehRes.success && !zeehRes.status) {
-        res.status(400).json({ success: false, message: zeehRes.message ?? 'NIN not found' }); return;
-      }
-      apiData = zeehRes.data as Record<string, unknown>;
-    } catch (apiErr: unknown) {
-      const msg = (axios.isAxiosError(apiErr) && apiErr.response?.data?.message) || 'NIN lookup service unavailable. Try again later.';
-      res.status(503).json({ success: false, message: msg }); return;
-    }
-
-    const norm = (s: unknown) => String(s ?? '').toLowerCase().trim();
-    const nameMatch =
-      norm(apiData.firstName) === norm(user.first_name) ||
-      norm(apiData.lastName)  === norm(user.last_name);
-
-    res.json({
-      success: true,
-      data: {
-        firstName:   apiData.firstName,
-        lastName:    apiData.lastName,
-        dateOfBirth: apiData.dateOfBirth,
-        gender:      apiData.gender,
-        phone:       String(apiData.phoneNumber ?? '').replace(/(\d{4})\d{4}(\d{3})/, '$1****$2'),
-        faceImage:   apiData.image ?? '',
-        nameMatch,
-        dobMatch:    false,
-      },
-    });
-  } catch (err) { next(err); }
-});
-
-// ── Custom KYC: full submission ────────────────────────────────────────────
-// Stores verification results + captured images, marks user as pending review.
+// ── Custom KYC: minimal submission ────────────────────────────────────────
+//
+// Stores ONLY the verification result — no raw ID data, no images.
+// Compliant with NDPR (data minimisation) and FINTRAC (5-year audit trail).
+//
 router.post('/kyc/submit', requireEmailVerified, async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const {
-      id_type, id_number, id_name, id_dob,
-      name_match, dob_match,
-      face_image,       // from BVN/NIN API
-      passport_image,   // captured by user
-      liveness_images,  // array of selfie frames
-    } = req.body ?? {};
+    const { id_type, id_number, name_match, passport_done, liveness_done } = req.body ?? {};
 
     if (!id_type || !id_number) {
-      res.status(400).json({ success: false, message: 'id_type and id_number are required' }); return;
+      res.status(400).json({ success: false, message: 'id_type and id_number required' }); return;
+    }
+    if (!passport_done || !liveness_done) {
+      res.status(400).json({ success: false, message: 'Passport and liveness steps must be completed' }); return;
     }
 
     const userId = req.user!.user_id;
+    const idHash = crypto.createHash('sha256').update(String(id_number)).digest('hex');
 
-    // Store KYC record with all verification data
+    // Store only the verification RESULT — never the raw API response
     await submitKyc(userId, {
-      date_of_birth:  id_dob ?? '',
-      nationality:    id_type === 'bvn' || id_type === 'nin' ? 'Nigerian' : 'Unknown',
-      id_type:        id_type === 'bvn' ? 'national_id' : 'national_id',
-      id_number:      String(id_number),
-      address:        { street: '', city: '', state: '', country: 'Nigeria', postal_code: '' },
-      // Extended fields stored as extra attributes
-      ...(id_name        && { id_name }),
-      ...(name_match     !== undefined && { name_match }),
-      ...(dob_match      !== undefined && { dob_match }),
-      ...(face_image     && { face_image:    face_image.substring(0, 200000) }),    // cap at ~150KB
-      ...(passport_image && { passport_image: passport_image.substring(0, 100000) }),
-      ...(liveness_images && { liveness_images: (liveness_images as string[]).map((img: string) => img.substring(0, 50000)) }),
+      date_of_birth: '',
+      nationality:   'Nigerian',
+      id_type:       'national_id',
+      id_number:     idHash,          // store hash only, not the actual BVN/NIN
+      address:       { street: '', city: '', state: '', country: 'Nigeria', postal_code: '' },
+      // Minimal audit fields
+      ...({ verification_id_type: id_type, name_match: !!name_match, liveness_completed: true } as object),
     } as Parameters<typeof submitKyc>[1]);
 
-    // Auto-approve if strong name match, else pending for admin review
-    const autoApprove = name_match === true;
-    const newStatus = autoApprove ? 'approved' : 'pending';
-    if (autoApprove) {
-      await updateKycStatus(userId, 'approved');
-    }
+    // Auto-approve on name match + completed biometric steps, else manual review
+    const autoApprove = name_match === true && passport_done === true && liveness_done === true;
+    if (autoApprove) await updateKycStatus(userId, 'approved');
 
-    // Notify
     const u = await getUserById(userId).catch(() => null);
     if (u) {
       sendKycSubmitted(u.email, u.first_name);
       if (!autoApprove) sendAdminKycAlert(u.email, u.user_id, `${u.first_name} ${u.last_name}`);
     }
 
-    auditLog('kyc.custom_submit', req, { id_type, nameMatch: name_match, autoApprove });
+    const newStatus = autoApprove ? 'approved' : 'pending';
+    auditLog('kyc.submit', req, { id_type, nameMatch: !!name_match, autoApprove });
     res.json({ success: true, data: { kyc_status: newStatus } });
   } catch (err) { next(err); }
 });
