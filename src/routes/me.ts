@@ -18,9 +18,10 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { z } from 'zod';
 import crypto from 'crypto';
+import axios from 'axios';
 import {
   getUserById, getUserByEmail,
-  updateUserProfile, submitKyc, getKyc,
+  updateUserProfile, submitKyc, getKyc, updateKycStatus,
   setTransactionPin, verifyTransactionPin, hasPinSet,
 } from '../lib/userStore';
 import {
@@ -153,6 +154,53 @@ router.post('/kyc', async (req: Request, res: Response, next: NextFunction) => {
     }
 
     res.status(201).json({ success: true, message: 'KYC submitted — we will review within 24 hours', data: { submitted_at: record.submitted_at } });
+  } catch (err) { next(err); }
+});
+
+// ── KYC widget completion (called by the Zeeh KYC React SDK onComplete) ────
+// The widget runs server-side checks itself. When onComplete fires, the session
+// has already been verified by Zeeh. We confirm via the secret key then mark
+// the user as approved immediately (no manual review needed for widget path).
+router.post('/kyc/widget-complete', requireEmailVerified, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { sessionId } = req.body ?? {};
+    if (!sessionId) {
+      res.status(400).json({ success: false, message: 'sessionId required' }); return;
+    }
+
+    const secretKey = process.env.ZEEH_KYC_SECRET_KEY;
+    if (!secretKey) {
+      console.error('ZEEH_KYC_SECRET_KEY not configured');
+      res.status(500).json({ success: false, message: 'KYC service not configured' }); return;
+    }
+
+    // Verify the session with Zeeh's API using the secret key
+    let verified = false;
+    try {
+      const verifyRes = await axios.get(
+        `https://api.zeeh.africa/api/v1/kyc/sessions/${sessionId}/verify`,
+        { headers: { Authorization: `Bearer ${secretKey}` } },
+      );
+      verified = verifyRes.data?.data?.status === 'approved' || verifyRes.data?.success === true;
+    } catch (verifyErr: unknown) {
+      // If verification endpoint fails, fall back to marking as pending
+      console.warn('KYC session verify API error:', (verifyErr as Error).message);
+      verified = false;
+    }
+
+    const newStatus = verified ? 'approved' : 'pending';
+    await updateKycStatus(req.user!.user_id, newStatus);
+
+    // Notify
+    const u = await getUserById(req.user!.user_id).catch(() => null);
+    if (u && newStatus === 'approved') {
+      sendKycSubmitted(u.email, u.first_name);
+    } else if (u) {
+      sendAdminKycAlert(u.email, u.user_id, `${u.first_name} ${u.last_name}`);
+    }
+
+    auditLog('kyc.widget_complete', req, { sessionId, result: newStatus });
+    res.json({ success: true, data: { kyc_status: newStatus } });
   } catch (err) { next(err); }
 });
 
