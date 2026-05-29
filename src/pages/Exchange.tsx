@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import api from '../lib/api';
 import { useAuthStore } from '../store/authStore';
 import { toast } from '../components/Toast';
+import { PinModal } from '../components/PinModal';
 
 const CURRENCIES = ['CAD', 'USD', 'NGN', 'GBP', 'EUR'];
 
@@ -14,6 +15,8 @@ export default function Exchange() {
   const [loading, setLoading] = useState(false);
   const [rateLoading, setRateLoading] = useState(false);
   const [done,    setDone]    = useState<{ from_amount: number; to_amount: number; rate: number } | null>(null);
+  const [showPin, setShowPin] = useState(false);
+  const [pinError, setPinError] = useState('');
 
   const needsKyc = user?.kyc_status !== 'approved';
 
@@ -29,17 +32,23 @@ export default function Exchange() {
 
   const toAmount = rate && amount ? (parseFloat(amount) * rate).toFixed(2) : '';
 
-  async function handleSwap() {
+  async function handleSwap(pin: string) {
     setLoading(true);
+    setPinError('');
     try {
       const { data } = await api.post('/me/swap', {
-        amount, from_currency: from, to_currency: to,
+        amount, from_currency: from, to_currency: to, pin,
       });
       const s = data.data?.settlement;
+      setShowPin(false);
       setDone({ from_amount: s?.from_amount, to_amount: s?.to_amount, rate: s?.rate });
       toast(`Exchanged ${from} ${amount} → ${to} ${toAmount}!`);
     } catch (err: unknown) {
-      const d = (err as { response?: { data?: { message?: string; data?: { available?: string } } } }).response?.data;
+      const d = (err as { response?: { data?: { message?: string; code?: string; data?: { available?: string } } } }).response?.data;
+      if (d?.code === 'INCORRECT_PIN') { setPinError('Incorrect PIN. Try again.'); return; }
+      if (d?.code === 'PIN_LOCKED')    { setPinError(d.message ?? 'PIN locked.'); return; }
+      if (d?.code === 'PIN_NOT_SET')   { toast('Set a transaction PIN in Profile → Security first.', 'err'); setShowPin(false); return; }
+      setShowPin(false);
       const avail = d?.data?.available;
       toast(avail ? `Insufficient balance. Available: ${from} ${avail}` : (d?.message ?? 'Exchange failed'), 'err');
     } finally { setLoading(false); }
@@ -119,11 +128,20 @@ export default function Exchange() {
         <button
           className="btn btn-success btn-full"
           disabled={!amount || !rate || from === to || needsKyc || loading}
-          onClick={handleSwap}
+          onClick={() => { setPinError(''); setShowPin(true); }}
         >
-          {loading ? <span className="spinner" /> : `Exchange ${from} → ${to}`}
+          {`Exchange ${from} → ${to}`}
         </button>
       </div>
+
+      {showPin && (
+        <PinModal
+          onConfirm={handleSwap}
+          onCancel={() => { setShowPin(false); setPinError(''); }}
+          loading={loading}
+          error={pinError}
+        />
+      )}
     </div>
   );
 }

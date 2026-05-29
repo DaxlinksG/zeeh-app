@@ -2,6 +2,7 @@ import { useState } from 'react';
 import api from '../lib/api';
 import { useAuthStore } from '../store/authStore';
 import { toast } from '../components/Toast';
+import { PinModal } from '../components/PinModal';
 
 type Currency = 'CAD' | 'USD' | 'NGN' | 'GBP' | 'EUR';
 
@@ -46,27 +47,41 @@ export default function Pay() {
   const [fields,    setFields]    = useState<Record<string, string>>({});
   const [loading,   setLoading]   = useState(false);
   const [done,      setDone]      = useState(false);
+  const [showPin,   setShowPin]   = useState(false);
+  const [pinError,  setPinError]  = useState('');
 
   function setField(key: string, val: string) {
     setFields(f => ({ ...f, [key]: val }));
   }
 
-  async function handlePay(e: React.FormEvent) {
+  // Form submit → show PIN modal (validates fields first)
+  function handleFormSubmit(e: React.FormEvent) {
     e.preventDefault();
+    setPinError('');
+    setShowPin(true);
+  }
+
+  async function handlePay(pin: string) {
     setLoading(true);
+    setPinError('');
     try {
       const body: Record<string, unknown> = {
-        amount, currency,
+        amount, currency, pin,
         client_reference: reference || `PAY-${Date.now()}`,
         description: `Bank transfer ${currency} ${amount}`,
         ...fields,
       };
       if (currency === 'NGN' && body.bank_id) body.bank_id = parseInt(body.bank_id as string);
       await api.post('/me/transfer', body);
+      setShowPin(false);
       setDone(true);
       toast(`${currency} ${amount} transfer initiated!`);
     } catch (err: unknown) {
-      const d = (err as { response?: { data?: { message?: string; data?: { available?: string } } } }).response?.data;
+      const d = (err as { response?: { data?: { message?: string; code?: string; data?: { available?: string } } } }).response?.data;
+      if (d?.code === 'INCORRECT_PIN') { setPinError('Incorrect PIN. Try again.'); return; }
+      if (d?.code === 'PIN_LOCKED')    { setPinError(d.message ?? 'PIN locked.'); return; }
+      if (d?.code === 'PIN_NOT_SET')   { toast('Set a transaction PIN in Profile → Security first.', 'err'); setShowPin(false); return; }
+      setShowPin(false);
       const avail = d?.data?.available;
       toast(avail ? `Insufficient balance. Available: ${currency} ${avail}` : (d?.message ?? 'Transfer failed'), 'err');
     } finally { setLoading(false); }
@@ -96,7 +111,7 @@ export default function Pay() {
         </div>
       )}
 
-      <form className="card" onSubmit={handlePay}>
+      <form className="card" onSubmit={handleFormSubmit}>
         {/* Currency + Amount */}
         <div style={{ display: 'grid', gridTemplateColumns: '110px 1fr', gap: '.8rem', marginBottom: '1rem' }}>
           <div className="form-group" style={{ marginBottom: 0 }}>
@@ -129,10 +144,19 @@ export default function Pay() {
           <input value={reference} onChange={e => setReference(e.target.value)} placeholder="Your reference" />
         </div>
 
-        <button className="btn btn-success btn-full" disabled={needsKyc || loading} style={{ marginTop: '.5rem' }}>
-          {loading ? <span className="spinner" /> : `Send ${currency}${amount ? ' ' + amount : ''}`}
+        <button className="btn btn-success btn-full" disabled={needsKyc} style={{ marginTop: '.5rem' }}>
+          {`Send ${currency}${amount ? ' ' + amount : ''}`}
         </button>
       </form>
+
+      {showPin && (
+        <PinModal
+          onConfirm={handlePay}
+          onCancel={() => { setShowPin(false); setPinError(''); }}
+          loading={loading}
+          error={pinError}
+        />
+      )}
     </div>
   );
 }

@@ -4,10 +4,15 @@ import { useAuthStore } from '../store/authStore';
 const navItems = [
   { to: '/dashboard',    label: 'Home',     icon: '⊞' },
   { to: '/send',         label: 'Send',     icon: '↗' },
-  { to: '/pay',          label: 'Pay',      icon: '🏦' },
   { to: '/exchange',     label: 'Exchange', icon: '⇄' },
   { to: '/deposit',      label: 'Deposit',  icon: '↙' },
   { to: '/transactions', label: 'History',  icon: '≡' },
+];
+
+// Sidebar-only items (Pay and Beneficiaries shown on desktop but not crammed into mobile bottom nav)
+const sidebarExtra = [
+  { to: '/pay',          label: 'Pay',         icon: '🏦' },
+  { to: '/beneficiaries',label: 'Beneficiaries', icon: '👥' },
 ];
 
 export default function Layout({ children }: { children: React.ReactNode }) {
@@ -50,7 +55,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
 
         {/* Nav */}
         <nav style={{ flex: 1, padding: '1rem .8rem', display: 'flex', flexDirection: 'column', gap: '.2rem' }}>
-          {navItems.map(item => (
+          {[...navItems, ...sidebarExtra].map(item => (
             <NavLink
               key={item.to}
               to={item.to}

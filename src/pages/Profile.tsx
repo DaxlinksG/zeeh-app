@@ -19,10 +19,12 @@ const ID_TYPES = [
   { value: 'national_id',      label: 'National ID' },
 ];
 
+type Tab = 'profile' | 'kyc' | 'security';
+
 export default function Profile() {
   const { user, updateUser } = useAuthStore();
   const [loading, setLoading] = useState(false);
-  const [kycTab,  setKycTab]  = useState(false);
+  const [tab,     setTab]     = useState<Tab>('profile');
 
   // Profile form
   const [profile, setProfile] = useState({ first_name: user?.first_name ?? '', last_name: user?.last_name ?? '', phone: '', country: '' });
@@ -33,16 +35,66 @@ export default function Profile() {
     address: { street: '', city: '', state: '', country: '', postal_code: '' },
   });
 
-  // Load full profile — also syncs kyc_status and email_verified into the store
-  // so admin approvals are reflected without requiring a logout/login.
+  // Security / PIN
+  const [hasPin,    setHasPin]    = useState(false);
+  const [pinLoading, setPinLoading] = useState(false);
+  // First-time set
+  const [setForm,   setSetForm]   = useState({ pin: '', confirm: '' });
+  // Change existing PIN
+  const [chgForm,   setChgForm]   = useState({ current_pin: '', new_pin: '', new_confirm: '' });
+  // Reset via password
+  const [rstForm,   setRstForm]   = useState({ password: '', new_pin: '', new_confirm: '' });
+
+  // Load full profile — also syncs kyc_status, email_verified, and has_pin into the store
   useEffect(() => {
     api.get('/me/profile').then(r => {
       const u = r.data.data;
       setProfile({ first_name: u.first_name, last_name: u.last_name, phone: u.phone ?? '', country: u.country ?? '' });
-      // Sync any server-side changes (KYC approval, email verification) back to the store
       updateUser({ kyc_status: u.kyc_status, email_verified: u.email_verified });
+      setHasPin(u.has_pin ?? false);
     }).catch(() => {});
   }, [updateUser]);
+
+  async function handleSetPin(e: React.FormEvent) {
+    e.preventDefault();
+    if (setForm.pin !== setForm.confirm) { toast('PINs do not match', 'err'); return; }
+    setPinLoading(true);
+    try {
+      await api.post('/me/pin/set', { pin: setForm.pin });
+      setHasPin(true);
+      setSetForm({ pin: '', confirm: '' });
+      toast('Transaction PIN set 🔐');
+    } catch (err: unknown) {
+      toast((err as { response?: { data?: { message?: string } } }).response?.data?.message ?? 'Failed to set PIN', 'err');
+    } finally { setPinLoading(false); }
+  }
+
+  async function handleChangePin(e: React.FormEvent) {
+    e.preventDefault();
+    if (chgForm.new_pin !== chgForm.new_confirm) { toast('New PINs do not match', 'err'); return; }
+    setPinLoading(true);
+    try {
+      await api.post('/me/pin/change', { current_pin: chgForm.current_pin, new_pin: chgForm.new_pin });
+      setChgForm({ current_pin: '', new_pin: '', new_confirm: '' });
+      toast('Transaction PIN updated ✅');
+    } catch (err: unknown) {
+      toast((err as { response?: { data?: { message?: string } } }).response?.data?.message ?? 'Failed to change PIN', 'err');
+    } finally { setPinLoading(false); }
+  }
+
+  async function handleResetPin(e: React.FormEvent) {
+    e.preventDefault();
+    if (rstForm.new_pin !== rstForm.new_confirm) { toast('New PINs do not match', 'err'); return; }
+    setPinLoading(true);
+    try {
+      await api.post('/me/pin/reset', { password: rstForm.password, new_pin: rstForm.new_pin });
+      setHasPin(true);
+      setRstForm({ password: '', new_pin: '', new_confirm: '' });
+      toast('Transaction PIN reset ✅');
+    } catch (err: unknown) {
+      toast((err as { response?: { data?: { message?: string } } }).response?.data?.message ?? 'Failed to reset PIN', 'err');
+    } finally { setPinLoading(false); }
+  }
 
   async function saveProfile(e: React.FormEvent) {
     e.preventDefault();
@@ -87,7 +139,7 @@ export default function Profile() {
         </div>
         {(kycStatus === 'none' || kycStatus === 'rejected') && (
           <button className="btn btn-sm" style={{ background: 'var(--warn)', color: '#000', whiteSpace: 'nowrap', flexShrink: 0 }}
-            onClick={() => setKycTab(true)}>
+            onClick={() => setTab('kyc')}>
             {kycStatus === 'rejected' ? 'Re-submit' : 'Start KYC'}
           </button>
         )}
@@ -95,19 +147,19 @@ export default function Profile() {
 
       {/* Tabs */}
       <div style={{ display: 'flex', gap: '.3rem', marginBottom: '1.2rem', background: 'var(--surface)', borderRadius: 8, padding: '.3rem' }}>
-        {[false, true].map(isKyc => (
-          <button key={String(isKyc)} onClick={() => setKycTab(isKyc)} className="btn" style={{
-            flex: 1, padding: '.5rem', fontSize: '.88rem',
-            background: kycTab === isKyc ? 'var(--bg)' : 'transparent',
-            color: kycTab === isKyc ? 'var(--text)' : 'var(--muted)',
-            border: kycTab === isKyc ? '1px solid var(--border)' : 'none', borderRadius: 6,
+        {(['profile', 'kyc', 'security'] as Tab[]).map(t => (
+          <button key={t} onClick={() => setTab(t)} className="btn" style={{
+            flex: 1, padding: '.5rem', fontSize: '.82rem',
+            background: tab === t ? 'var(--bg)' : 'transparent',
+            color: tab === t ? 'var(--text)' : 'var(--muted)',
+            border: tab === t ? '1px solid var(--border)' : 'none', borderRadius: 6,
           }}>
-            {isKyc ? 'KYC Documents' : 'Personal Info'}
+            {t === 'profile' ? 'Personal Info' : t === 'kyc' ? 'KYC Docs' : '🔐 Security'}
           </button>
         ))}
       </div>
 
-      {!kycTab ? (
+      {tab === 'profile' ? (
         <form className="card" onSubmit={saveProfile}>
           <div className="grid-2">
             <div className="form-group">
@@ -140,7 +192,7 @@ export default function Profile() {
             {loading ? <span className="spinner" /> : 'Save Changes'}
           </button>
         </form>
-      ) : (
+      ) : tab === 'kyc' ? (
         <form className="card" onSubmit={submitKyc}>
           {kycStatus === 'approved' ? (
             <div style={{ textAlign: 'center', padding: '2rem', color: 'var(--accent2)' }}>
@@ -210,6 +262,105 @@ export default function Profile() {
             </>
           )}
         </form>
+      ) : (
+        /* ── Security tab ── */
+        <div className="card">
+          <div style={{ marginBottom: '1.4rem' }}>
+            <div style={{ fontWeight: 600, marginBottom: '.25rem' }}>Transaction PIN</div>
+            <div style={{ fontSize: '.84rem', color: 'var(--muted)' }}>
+              Required before every send, exchange, or bank transfer.
+            </div>
+            <div style={{ marginTop: '.5rem', display: 'flex', alignItems: 'center', gap: '.5rem' }}>
+              <span className={`badge ${hasPin ? 'badge-green' : 'badge-grey'}`}>
+                {hasPin ? 'PIN set ✓' : 'Not set'}
+              </span>
+            </div>
+          </div>
+
+          {!hasPin ? (
+            /* First-time setup */
+            <form onSubmit={handleSetPin}>
+              <div style={{ fontSize: '.78rem', color: 'var(--muted)', marginBottom: '.8rem', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.04em' }}>
+                Set your PIN
+              </div>
+              <div className="grid-2">
+                <div className="form-group">
+                  <label>4-digit PIN</label>
+                  <input type="password" inputMode="numeric" maxLength={4} required
+                    value={setForm.pin} onChange={e => setSetForm(f => ({ ...f, pin: e.target.value.replace(/\D/g,'') }))}
+                    placeholder="••••" style={{ textAlign: 'center', fontSize: '1.4rem', letterSpacing: '0.3em', fontFamily: 'monospace' }} />
+                </div>
+                <div className="form-group">
+                  <label>Confirm PIN</label>
+                  <input type="password" inputMode="numeric" maxLength={4} required
+                    value={setForm.confirm} onChange={e => setSetForm(f => ({ ...f, confirm: e.target.value.replace(/\D/g,'') }))}
+                    placeholder="••••" style={{ textAlign: 'center', fontSize: '1.4rem', letterSpacing: '0.3em', fontFamily: 'monospace' }} />
+                </div>
+              </div>
+              <button className="btn btn-primary btn-full" disabled={pinLoading || setForm.pin.length !== 4 || setForm.confirm.length !== 4}>
+                {pinLoading ? <span className="spinner" /> : 'Set PIN'}
+              </button>
+            </form>
+          ) : (
+            /* Change PIN */
+            <form onSubmit={handleChangePin}>
+              <div style={{ fontSize: '.78rem', color: 'var(--muted)', marginBottom: '.8rem', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.04em' }}>
+                Change PIN
+              </div>
+              <div className="form-group">
+                <label>Current PIN</label>
+                <input type="password" inputMode="numeric" maxLength={4} required
+                  value={chgForm.current_pin} onChange={e => setChgForm(f => ({ ...f, current_pin: e.target.value.replace(/\D/g,'') }))}
+                  placeholder="••••" style={{ textAlign: 'center', fontSize: '1.4rem', letterSpacing: '0.3em', fontFamily: 'monospace' }} />
+              </div>
+              <div className="grid-2">
+                <div className="form-group">
+                  <label>New PIN</label>
+                  <input type="password" inputMode="numeric" maxLength={4} required
+                    value={chgForm.new_pin} onChange={e => setChgForm(f => ({ ...f, new_pin: e.target.value.replace(/\D/g,'') }))}
+                    placeholder="••••" style={{ textAlign: 'center', fontSize: '1.4rem', letterSpacing: '0.3em', fontFamily: 'monospace' }} />
+                </div>
+                <div className="form-group">
+                  <label>Confirm New</label>
+                  <input type="password" inputMode="numeric" maxLength={4} required
+                    value={chgForm.new_confirm} onChange={e => setChgForm(f => ({ ...f, new_confirm: e.target.value.replace(/\D/g,'') }))}
+                    placeholder="••••" style={{ textAlign: 'center', fontSize: '1.4rem', letterSpacing: '0.3em', fontFamily: 'monospace' }} />
+                </div>
+              </div>
+              <button className="btn btn-primary btn-full" disabled={pinLoading || chgForm.current_pin.length !== 4 || chgForm.new_pin.length !== 4 || chgForm.new_confirm.length !== 4}>
+                {pinLoading ? <span className="spinner" /> : 'Change PIN'}
+              </button>
+            </form>
+          )}
+
+          {/* Reset via password */}
+          <details style={{ marginTop: '1.4rem', borderTop: '1px solid var(--border)', paddingTop: '1.2rem' }}>
+            <summary style={{ fontSize: '.84rem', color: 'var(--muted)', cursor: 'pointer' }}>Forgot your PIN? Reset with password</summary>
+            <form onSubmit={handleResetPin} style={{ marginTop: '1rem' }}>
+              <div className="form-group">
+                <label>Account Password</label>
+                <input type="password" required value={rstForm.password} onChange={e => setRstForm(f => ({ ...f, password: e.target.value }))} placeholder="Your login password" />
+              </div>
+              <div className="grid-2">
+                <div className="form-group">
+                  <label>New PIN</label>
+                  <input type="password" inputMode="numeric" maxLength={4} required
+                    value={rstForm.new_pin} onChange={e => setRstForm(f => ({ ...f, new_pin: e.target.value.replace(/\D/g,'') }))}
+                    placeholder="••••" style={{ textAlign: 'center', fontSize: '1.4rem', letterSpacing: '0.3em', fontFamily: 'monospace' }} />
+                </div>
+                <div className="form-group">
+                  <label>Confirm New</label>
+                  <input type="password" inputMode="numeric" maxLength={4} required
+                    value={rstForm.new_confirm} onChange={e => setRstForm(f => ({ ...f, new_confirm: e.target.value.replace(/\D/g,'') }))}
+                    placeholder="••••" style={{ textAlign: 'center', fontSize: '1.4rem', letterSpacing: '0.3em', fontFamily: 'monospace' }} />
+                </div>
+              </div>
+              <button className="btn btn-warn btn-full" disabled={pinLoading || !rstForm.password || rstForm.new_pin.length !== 4 || rstForm.new_confirm.length !== 4}>
+                {pinLoading ? <span className="spinner" /> : 'Reset PIN'}
+              </button>
+            </form>
+          </details>
+        </div>
       )}
     </div>
   );

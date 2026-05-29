@@ -1,46 +1,61 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import api from '../lib/api';
 import { toast } from '../components/Toast';
+import { PinModal } from '../components/PinModal';
 
-interface Recipient { user_id: string; first_name: string; last_name: string; email: string; }
+interface Beneficiary {
+  beneficiary_id: string;
+  email:          string;
+  first_name:     string;
+  last_name:      string;
+}
 
 const CURRENCIES = ['CAD', 'USD', 'NGN', 'GBP', 'EUR'];
 
 export default function Send() {
-  const [step, setStep] = useState<'search' | 'amount' | 'confirm' | 'done'>(  'search');
-  const [email,     setEmail]     = useState('');
-  const [recipient, setRecipient] = useState<Recipient | null>(null);
-  const [currency,  setCurrency]  = useState('CAD');
-  const [amount,    setAmount]    = useState('');
-  const [note,      setNote]      = useState('');
-  const [ref,       setRef]       = useState('');
-  const [loading,   setLoading]   = useState(false);
+  const navigate = useNavigate();
+  const [step,        setStep]        = useState<'pick' | 'amount' | 'confirm' | 'done'>('pick');
+  const [showPin,     setShowPin]     = useState(false);
+  const [beneficiaries, setBeneficiaries] = useState<Beneficiary[]>([]);
+  const [loadingBen,  setLoadingBen]  = useState(true);
+  const [recipient,   setRecipient]   = useState<Beneficiary | null>(null);
+  const [currency,    setCurrency]    = useState('CAD');
+  const [amount,      setAmount]      = useState('');
+  const [note,        setNote]        = useState('');
+  const [ref,         setRef]         = useState('');
+  const [loading,     setLoading]     = useState(false);
+  const [pinError,    setPinError]    = useState('');
 
-  async function searchUser(e: React.FormEvent) {
-    e.preventDefault();
-    setLoading(true);
-    try {
-      const { data } = await api.get(`/me/users/search?email=${encodeURIComponent(email)}`);
-      setRecipient(data.data);
-      setStep('amount');
-    } catch {
-      toast('User not found', 'err');
-    } finally { setLoading(false); }
-  }
+  useEffect(() => {
+    api.get('/me/beneficiaries')
+      .then(r => setBeneficiaries(r.data.data?.beneficiaries ?? []))
+      .catch(() => toast('Failed to load beneficiaries', 'err'))
+      .finally(() => setLoadingBen(false));
+  }, []);
 
-  async function handleSend() {
+  async function handleSend(pin: string) {
     setLoading(true);
+    setPinError('');
     try {
       const { data } = await api.post('/me/send', {
-        recipient_email: recipient!.email, currency, amount, note: note || undefined,
+        recipient_email: recipient!.email, currency, amount,
+        note: note || undefined, pin,
       });
       setRef(data.data.reference);
+      setShowPin(false);
       setStep('done');
       toast(`Sent ${currency} ${amount} to ${recipient!.first_name}!`);
     } catch (err: unknown) {
-      const d = (err as { response?: { data?: { message?: string; data?: { available?: string } } } }).response?.data;
+      const d = (err as { response?: { data?: { message?: string; code?: string; data?: { available?: string } } } }).response?.data;
+      if (d?.code === 'INCORRECT_PIN') { setPinError('Incorrect PIN. Try again.'); return; }
+      if (d?.code === 'PIN_LOCKED')    { setPinError(d.message ?? 'PIN locked. Wait 15 minutes.'); return; }
+      if (d?.code === 'PIN_NOT_SET')   { toast('Set a transaction PIN in Profile → Security first.', 'err'); setShowPin(false); return; }
+      setShowPin(false);
       const available = d?.data?.available;
-      toast(available ? `Insufficient balance. Available: ${currency} ${available}` : (d?.message ?? 'Send failed'), 'err');
+      toast(available
+        ? `Insufficient balance. Available: ${currency} ${available}`
+        : (d?.message ?? 'Send failed'), 'err');
     } finally { setLoading(false); }
   }
 
@@ -53,11 +68,11 @@ export default function Send() {
       </p>
       <div className="card" style={{ textAlign: 'left', marginBottom: '1.5rem' }}>
         <InfoRow label="Reference" value={ref} mono />
-        <InfoRow label="Amount" value={`${currency} ${amount}`} />
-        <InfoRow label="To" value={`${recipient?.first_name} ${recipient?.last_name} (${recipient?.email})`} />
+        <InfoRow label="Amount"    value={`${currency} ${amount}`} />
+        <InfoRow label="To"        value={`${recipient?.first_name} ${recipient?.last_name} (${recipient?.email})`} />
         {note && <InfoRow label="Note" value={note} />}
       </div>
-      <button className="btn btn-primary" onClick={() => { setStep('search'); setRecipient(null); setEmail(''); setAmount(''); setNote(''); }}>
+      <button className="btn btn-primary" onClick={() => { setStep('pick'); setRecipient(null); setAmount(''); setNote(''); }}>
         Send Again
       </button>
     </div>
@@ -67,24 +82,58 @@ export default function Send() {
     <div style={{ maxWidth: 480 }}>
       <h1 style={{ fontSize: '1.4rem', fontWeight: 700, marginBottom: '1.6rem' }}>Send Money</h1>
 
-      {step === 'search' && (
-        <div className="card">
-          <form onSubmit={searchUser}>
-            <div className="form-group">
-              <label>Recipient's Email</label>
-              <input type="email" required value={email} onChange={e => setEmail(e.target.value)} placeholder="friend@email.com" autoFocus />
+      {/* ── Step 1: Pick beneficiary ── */}
+      {step === 'pick' && (
+        loadingBen ? (
+          <div style={{ textAlign: 'center', padding: '3rem' }}><span className="spinner spinner-lg" /></div>
+        ) : beneficiaries.length === 0 ? (
+          <div className="card" style={{ textAlign: 'center', padding: '3rem', color: 'var(--muted)' }}>
+            <div style={{ fontSize: '2.5rem', marginBottom: '.8rem' }}>👥</div>
+            <div style={{ fontWeight: 500, marginBottom: '.5rem' }}>No beneficiaries yet</div>
+            <div style={{ fontSize: '.84rem', marginBottom: '1.5rem' }}>
+              Add someone as a beneficiary first before sending them money.
             </div>
-            <button className="btn btn-primary btn-full" disabled={loading}>
-              {loading ? <span className="spinner" /> : 'Find Recipient →'}
+            <button className="btn btn-primary" onClick={() => navigate('/beneficiaries')}>
+              Add Beneficiary →
             </button>
-          </form>
-        </div>
+          </div>
+        ) : (
+          <>
+            <div className="card" style={{ padding: 0, overflow: 'hidden', marginBottom: '.8rem' }}>
+              {beneficiaries.map((b, i) => (
+                <button
+                  key={b.beneficiary_id}
+                  onClick={() => { setRecipient(b); setStep('amount'); }}
+                  style={{
+                    width: '100%', display: 'flex', alignItems: 'center', gap: '1rem',
+                    padding: '1rem 1.2rem',
+                    borderBottom: i < beneficiaries.length - 1 ? '1px solid var(--border)' : 'none',
+                    background: 'transparent', border: 'none', cursor: 'pointer', textAlign: 'left',
+                  }}
+                >
+                  <div style={{ width: 40, height: 40, borderRadius: '50%', background: 'var(--accent)', display: 'grid', placeItems: 'center', fontSize: '1rem', fontWeight: 700, color: '#fff', flexShrink: 0 }}>
+                    {b.first_name[0].toUpperCase()}
+                  </div>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontWeight: 500 }}>{b.first_name} {b.last_name}</div>
+                    <div style={{ fontSize: '.8rem', color: 'var(--muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{b.email}</div>
+                  </div>
+                  <span style={{ color: 'var(--muted)', fontSize: '1.2rem' }}>›</span>
+                </button>
+              ))}
+            </div>
+            <button className="btn btn-ghost btn-sm" onClick={() => navigate('/beneficiaries')}>
+              + Manage Beneficiaries
+            </button>
+          </>
+        )
       )}
 
+      {/* ── Step 2: Amount ── */}
       {step === 'amount' && recipient && (
         <div className="card">
           <div style={{ display: 'flex', alignItems: 'center', gap: '.8rem', marginBottom: '1.4rem', padding: '.8rem', background: 'rgba(0,212,170,.06)', borderRadius: 8, border: '1px solid rgba(0,212,170,.2)' }}>
-            <div style={{ width: 40, height: 40, borderRadius: '50%', background: 'var(--accent)', display: 'grid', placeItems: 'center', fontSize: '1.1rem', fontWeight: 700 }}>
+            <div style={{ width: 40, height: 40, borderRadius: '50%', background: 'var(--accent)', display: 'grid', placeItems: 'center', fontSize: '1rem', fontWeight: 700, color: '#fff' }}>
               {recipient.first_name[0]}
             </div>
             <div>
@@ -112,30 +161,42 @@ export default function Send() {
           </div>
 
           <div style={{ display: 'flex', gap: '.7rem', marginTop: '.5rem' }}>
-            <button className="btn btn-ghost" onClick={() => setStep('search')}>← Back</button>
-            <button className="btn btn-primary" style={{ flex: 1 }} disabled={!amount || loading} onClick={() => setStep('confirm')}>
+            <button className="btn btn-ghost" onClick={() => setStep('pick')}>← Back</button>
+            <button className="btn btn-primary" style={{ flex: 1 }} disabled={!amount} onClick={() => setStep('confirm')}>
               Review →
             </button>
           </div>
         </div>
       )}
 
+      {/* ── Step 3: Confirm ── */}
       {step === 'confirm' && recipient && (
-        <div className="card">
-          <h3 style={{ marginBottom: '1.2rem', fontSize: '1rem' }}>Confirm Transfer</h3>
-          <div style={{ background: 'var(--bg)', borderRadius: 8, padding: '1rem', marginBottom: '1.2rem' }}>
-            <InfoRow label="To"       value={`${recipient.first_name} ${recipient.last_name}`} />
-            <InfoRow label="Email"    value={recipient.email} />
-            <InfoRow label="Amount"   value={`${currency} ${amount}`} />
-            {note && <InfoRow label="Note" value={note} />}
+        <>
+          <div className="card">
+            <h3 style={{ marginBottom: '1.2rem', fontSize: '1rem' }}>Confirm Transfer</h3>
+            <div style={{ background: 'var(--bg)', borderRadius: 8, padding: '1rem', marginBottom: '1.2rem' }}>
+              <InfoRow label="To"     value={`${recipient.first_name} ${recipient.last_name}`} />
+              <InfoRow label="Email"  value={recipient.email} />
+              <InfoRow label="Amount" value={`${currency} ${amount}`} />
+              {note && <InfoRow label="Note" value={note} />}
+            </div>
+            <div style={{ display: 'flex', gap: '.7rem' }}>
+              <button className="btn btn-ghost" onClick={() => setStep('amount')}>← Back</button>
+              <button className="btn btn-success" style={{ flex: 1 }} onClick={() => { setPinError(''); setShowPin(true); }}>
+                Enter PIN & Send →
+              </button>
+            </div>
           </div>
-          <div style={{ display: 'flex', gap: '.7rem' }}>
-            <button className="btn btn-ghost" onClick={() => setStep('amount')}>← Back</button>
-            <button className="btn btn-success" style={{ flex: 1 }} disabled={loading} onClick={handleSend}>
-              {loading ? <span className="spinner" /> : `Send ${currency} ${amount}`}
-            </button>
-          </div>
-        </div>
+
+          {showPin && (
+            <PinModal
+              onConfirm={handleSend}
+              onCancel={() => { setShowPin(false); setPinError(''); }}
+              loading={loading}
+              error={pinError}
+            />
+          )}
+        </>
       )}
     </div>
   );

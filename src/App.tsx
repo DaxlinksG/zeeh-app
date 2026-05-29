@@ -3,15 +3,16 @@ import { useAuthStore } from './store/authStore';
 import Layout from './components/Layout';
 import { ToastContainer } from './components/Toast';
 
-import Auth         from './pages/Auth';
-import ResetPassword from './pages/ResetPassword';
-import Dashboard    from './pages/Dashboard';
-import Send         from './pages/Send';
-import Pay          from './pages/Pay';
-import Exchange     from './pages/Exchange';
-import Deposit      from './pages/Deposit';
-import Transactions from './pages/Transactions';
-import Profile      from './pages/Profile';
+import Auth           from './pages/Auth';
+import ResetPassword   from './pages/ResetPassword';
+import Dashboard       from './pages/Dashboard';
+import Send            from './pages/Send';
+import Pay             from './pages/Pay';
+import Exchange        from './pages/Exchange';
+import Deposit         from './pages/Deposit';
+import Transactions    from './pages/Transactions';
+import Profile         from './pages/Profile';
+import Beneficiaries   from './pages/Beneficiaries';
 
 function PrivateRoute({ children }: { children: React.ReactNode }) {
   const user = useAuthStore(s => s.user);
@@ -39,8 +40,9 @@ export default function App() {
                 <Route path="/exchange"     element={<Exchange />} />
                 <Route path="/deposit"      element={<Deposit />} />
                 <Route path="/transactions" element={<Transactions />} />
-                <Route path="/profile"      element={<Profile />} />
-                <Route path="*"             element={<Navigate to="/dashboard" replace />} />
+                <Route path="/profile"        element={<Profile />} />
+                <Route path="/beneficiaries" element={<Beneficiaries />} />
+                <Route path="*"              element={<Navigate to="/dashboard" replace />} />
               </Routes>
             </Layout>
           </PrivateRoute>
