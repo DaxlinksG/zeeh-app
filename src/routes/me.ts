@@ -178,9 +178,9 @@ router.post('/kyc/verify-bvn', requireEmailVerified, async (req: Request, res: R
       const { data: zeehRes } = await axios.post(
         'https://api.usezeeh.com/v1/nigeria_kyc/lookup_bvn_advance',
         { bvn: String(bvn) },
-        { headers: { 'Secret_key': secretKey, 'Content-Type': 'application/json' }, timeout: 20000 },
+        { headers: { 'secret-key': secretKey, 'Content-Type': 'application/json' }, timeout: 20000 },
       );
-      if (!zeehRes.success) {
+      if (!zeehRes.success && !zeehRes.status) {
         res.status(400).json({ success: false, message: zeehRes.message ?? 'BVN not found' }); return;
       }
       apiData = zeehRes.data as Record<string, unknown>;
@@ -231,9 +231,9 @@ router.post('/kyc/verify-nin', requireEmailVerified, async (req: Request, res: R
       const { data: zeehRes } = await axios.post(
         'https://api.usezeeh.com/v1/nigeria_kyc/lookup_nin',
         { nin: String(nin) },
-        { headers: { 'Secret_key': secretKey, 'Content-Type': 'application/json' }, timeout: 20000 },
+        { headers: { 'secret-key': secretKey, 'Content-Type': 'application/json' }, timeout: 20000 },
       );
-      if (!zeehRes.success) {
+      if (!zeehRes.success && !zeehRes.status) {
         res.status(400).json({ success: false, message: zeehRes.message ?? 'NIN not found' }); return;
       }
       apiData = zeehRes.data as Record<string, unknown>;
