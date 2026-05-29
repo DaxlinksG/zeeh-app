@@ -298,7 +298,8 @@ export async function findTransactionByReference(
   const result = await db.send(new QueryCommand({
     TableName:                 TXN_TABLE,
     KeyConditionExpression:    'client_id = :id',
-    FilterExpression:          'reference = :ref AND direction = :dir',
+    FilterExpression:          '#ref = :ref AND direction = :dir',
+    ExpressionAttributeNames:  { '#ref': 'reference' },  // 'reference' is a DynamoDB reserved keyword
     ExpressionAttributeValues: { ':id': clientId, ':ref': reference, ':dir': direction },
     ScanIndexForward:          false,
     Limit:                     10,
