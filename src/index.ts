@@ -50,11 +50,20 @@ async function markWebhookProcessed(eventKey: string): Promise<boolean> {
 
 const app = express();
 
-// CORS — lock to ALLOWED_ORIGINS in production; fall back to permissive in dev
+// CORS — lock to ALLOWED_ORIGINS in production; fall back to permissive in dev.
+// Capacitor Android uses "https://localhost" as the WebView origin, so that is
+// always allowed regardless of the ALLOWED_ORIGINS list.
 const _allowedOrigins = (process.env.ALLOWED_ORIGINS ?? '').split(',').map(s => s.trim()).filter(Boolean);
+const _capacitorOrigins = ['https://localhost', 'capacitor://localhost', 'ionic://localhost'];
+
 app.use(cors({
   origin: _allowedOrigins.length
-    ? (origin, cb) => (!origin || _allowedOrigins.includes(origin) ? cb(null, true) : cb(new Error('CORS: origin not allowed')))
+    ? (origin, cb) => {
+        const ok = !origin
+          || _allowedOrigins.includes(origin)
+          || _capacitorOrigins.includes(origin);   // mobile WebView
+        ok ? cb(null, true) : cb(new Error('CORS: origin not allowed'));
+      }
     : true,
   credentials: true,
 }));
