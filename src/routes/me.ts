@@ -173,20 +173,98 @@ router.post('/kyc/start', requireEmailVerified, async (req: Request, res: Respon
 
     auditLog('kyc.session_started', req, { session_id: session.session_id });
 
-    // widget_url from the KYC service is a relative path — make it absolute
-    const widgetUrl = session.widget_url?.startsWith('http')
-      ? session.widget_url
-      : `${kycBase}${session.widget_url}`;
-
     res.json({
       success: true,
       data: {
-        session_id: session.session_id,
-        widget_url: widgetUrl,
-        expires_at: session.expires_at,
+        session_id:    session.session_id,
+        session_token: session.session_token,
+        expires_at:    session.expires_at,
       },
     });
   } catch (err) { next(err); }
+});
+
+// ── KYC document upload proxy ─────────────────────────────────────────────
+// Receives a base64 image from the frontend and forwards it as multipart to
+// kyc.zeehfi.ca. This proxy avoids exposing the KYC API key to the browser
+// and sidesteps cross-origin restrictions on the KYC service.
+//
+// Body: { session_id, session_token, document_type, side?, image }
+//   image: data URL — "data:image/jpeg;base64,..."
+//
+router.post('/kyc/upload-doc', requireEmailVerified, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { session_id, session_token, document_type, side, image } = req.body ?? {};
+
+    if (!session_id || !session_token || !document_type || !image) {
+      res.status(400).json({ success: false, message: 'session_id, session_token, document_type, and image are required' }); return;
+    }
+    const validTypes = ['PASSPORT', 'NATIONAL_ID', 'DRIVERS_LICENSE'];
+    if (!validTypes.includes(document_type)) {
+      res.status(400).json({ success: false, message: `document_type must be one of: ${validTypes.join(', ')}` }); return;
+    }
+
+    // Decode base64 data URL → Buffer
+    const match = String(image).match(/^data:([^;]+);base64,(.+)$/);
+    if (!match) { res.status(400).json({ success: false, message: 'image must be a base64 data URL' }); return; }
+    const [, mimeType, b64] = match;
+    const buffer = Buffer.from(b64, 'base64');
+
+    // Build multipart form and forward to KYC service
+    const kycBase = process.env.KYC_SERVICE_URL ?? 'https://kyc.zeehfi.ca';
+    const form = new FormData();
+    form.append('file', new Blob([buffer], { type: mimeType }), 'document.jpg');
+    form.append('document_type', document_type);
+    if (side) form.append('side', side);
+
+    const { data } = await axios.post(
+      `${kycBase}/v1/sessions/${session_id}/documents`,
+      form,
+      { headers: { Authorization: `Bearer ${session_token}` }, timeout: 30000 },
+    );
+
+    auditLog('kyc.doc_uploaded', req, { session_id, document_type, side: side ?? 'FRONT' });
+    res.json({ success: true, data });
+  } catch (err: unknown) {
+    const status = axios.isAxiosError(err) ? (err.response?.status ?? 502) : 502;
+    const message = axios.isAxiosError(err) ? (err.response?.data?.message ?? 'Document upload failed') : 'Document upload failed';
+    res.status(status).json({ success: false, message });
+  }
+});
+
+// ── KYC selfie upload proxy ───────────────────────────────────────────────
+// Body: { session_id, session_token, image }
+//
+router.post('/kyc/upload-selfie', requireEmailVerified, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { session_id, session_token, image } = req.body ?? {};
+
+    if (!session_id || !session_token || !image) {
+      res.status(400).json({ success: false, message: 'session_id, session_token, and image are required' }); return;
+    }
+
+    const match = String(image).match(/^data:([^;]+);base64,(.+)$/);
+    if (!match) { res.status(400).json({ success: false, message: 'image must be a base64 data URL' }); return; }
+    const [, mimeType, b64] = match;
+    const buffer = Buffer.from(b64, 'base64');
+
+    const kycBase = process.env.KYC_SERVICE_URL ?? 'https://kyc.zeehfi.ca';
+    const form = new FormData();
+    form.append('file', new Blob([buffer], { type: mimeType }), 'selfie.jpg');
+
+    const { data } = await axios.post(
+      `${kycBase}/v1/sessions/${session_id}/selfie`,
+      form,
+      { headers: { Authorization: `Bearer ${session_token}` }, timeout: 30000 },
+    );
+
+    auditLog('kyc.selfie_uploaded', req, { session_id });
+    res.json({ success: true, data });
+  } catch (err: unknown) {
+    const status = axios.isAxiosError(err) ? (err.response?.status ?? 502) : 502;
+    const message = axios.isAxiosError(err) ? (err.response?.data?.message ?? 'Selfie upload failed') : 'Selfie upload failed';
+    res.status(status).json({ success: false, message });
+  }
 });
 
 // ── Balance ────────────────────────────────────────────────────────────────
