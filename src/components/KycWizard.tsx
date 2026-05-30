@@ -37,7 +37,7 @@ const STEP_LABELS: Partial<Record<Step, string>> = {
 };
 
 // ── Image compression ──────────────────────────────────────────────────────
-async function compressImage(file: File, maxW = 1280, quality = 0.88): Promise<string> {
+async function compressImage(file: File, maxW = 1100, quality = 0.82): Promise<string> {
   return new Promise((resolve, reject) => {
     const img = new Image();
     const url = URL.createObjectURL(file);
