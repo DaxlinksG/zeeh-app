@@ -1,6 +1,7 @@
 import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
+import axios from 'axios';
 import swaggerUi from 'swagger-ui-express';
 import { requireApiKey } from './middleware/auth';
 import { errorHandler } from './middleware/errorHandler';
@@ -24,6 +25,9 @@ import { getVirtualAccountByReference, recordVirtualAccountCredit } from './lib/
 import virtualAccountsRouter from './routes/virtualAccounts';
 import { creditBalance } from './lib/ledger';
 import { warmWalletCache } from './lib/walletCache';
+import { updateKycStatus, getUserById } from './lib/userStore';
+import type { KycStatus } from './lib/userStore';
+import { sendKycSubmitted, sendAdminKycAlert } from './lib/mailer';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, PutCommand as DdbPutCommand } from '@aws-sdk/lib-dynamodb';
 
@@ -69,7 +73,7 @@ app.use(cors({
 }));
 // Capture raw body for webhook signature verification BEFORE json parsing
 app.use((req, _res, next) => {
-  if (req.path === '/webhooks/receive') {
+  if (req.path === '/webhooks/receive' || req.path === '/webhooks/kyc') {
     let raw = Buffer.alloc(0);
     req.on('data', (chunk: Buffer) => { raw = Buffer.concat([raw, chunk]); });
     req.on('end', () => {
@@ -349,6 +353,119 @@ app.post('/webhooks/receive', async (req, res) => {
     }
   }
 
+  res.status(200).json({ received: true });
+});
+
+// ── KYC webhook receiver — kyc.zeehfi.ca calls this when a session completes ──
+//
+// Signature format:  X-KYC-Signature: t=<unix_ts>,v1=<hmac_sha256>
+// HMAC input:        "<timestamp>.<raw_body>"
+// Events handled:    session.approved | session.rejected | session.manual_review
+//
+app.post('/webhooks/kyc', async (req, res) => {
+  const rawBody       = (req as express.Request & { rawBody?: Buffer }).rawBody;
+  const kycWebhookSecret = process.env.KYC_WEBHOOK_SECRET;
+  const sigHeader     = req.headers['x-kyc-signature'] as string | undefined;
+
+  // ── Signature verification ─────────────────────────────────────────────────
+  if (kycWebhookSecret) {
+    if (!sigHeader || !rawBody) {
+      console.warn('⚠️  KYC webhook missing signature or body — rejected');
+      res.status(401).json({ error: 'Missing signature' }); return;
+    }
+    const { createHmac, timingSafeEqual } = await import('crypto');
+    // Parse "t=1234567890,v1=abc123..."
+    const parts = Object.fromEntries(sigHeader.split(',').map(p => { const i = p.indexOf('='); return [p.slice(0, i), p.slice(i + 1)]; }));
+    const ts = parts['t'];
+    const v1 = parts['v1'];
+    if (!ts || !v1) {
+      res.status(401).json({ error: 'Malformed signature header' }); return;
+    }
+    const payload  = `${ts}.${rawBody.toString('utf-8')}`;
+    const expected = createHmac('sha256', kycWebhookSecret).update(payload).digest('hex');
+    try {
+      if (!timingSafeEqual(Buffer.from(expected, 'hex'), Buffer.from(v1, 'hex'))) {
+        console.warn('⚠️  KYC webhook signature mismatch — rejected');
+        res.status(401).json({ error: 'Invalid signature' }); return;
+      }
+    } catch {
+      res.status(401).json({ error: 'Invalid signature format' }); return;
+    }
+  } else {
+    console.warn('⚠️  KYC_WEBHOOK_SECRET not set — skipping KYC webhook signature check');
+  }
+
+  // ── Parse body ─────────────────────────────────────────────────────────────
+  let event: Record<string, unknown>;
+  try {
+    event = rawBody
+      ? JSON.parse(rawBody.toString('utf-8'))
+      : (req.body as Record<string, unknown>);
+  } catch {
+    res.status(400).json({ error: 'Invalid JSON' }); return;
+  }
+
+  const eventType = String(event.type ?? event.event ?? '');
+  const data      = event.data as Record<string, unknown> | undefined;
+  const sessionId = String(data?.session_id ?? data?.id ?? event.session_id ?? '');
+
+  // externalId is the user_id we passed when creating the session
+  const externalId = String(data?.external_id ?? data?.externalId ?? event.external_id ?? '');
+
+  console.log(`📨  KYC WEBHOOK: ${eventType}  session=${sessionId}  user=${externalId || '(unknown)'}`);
+
+  // Ack non-actionable events (e.g. ping test)
+  if (!['session.approved', 'session.rejected', 'session.manual_review'].includes(eventType)) {
+    res.status(200).json({ received: true }); return;
+  }
+
+  // ── Resolve user_id ────────────────────────────────────────────────────────
+  // Primary:  externalId in the webhook payload
+  // Fallback: fetch the session from kyc.zeehfi.ca and read externalId from there
+  let userId = externalId;
+  if (!userId && sessionId) {
+    try {
+      const kycBase   = process.env.KYC_SERVICE_URL ?? 'https://kyc.zeehfi.ca';
+      const kycApiKey = process.env.KYC_API_KEY!;
+      const { data: session } = await axios.get(`${kycBase}/v1/sessions/${sessionId}`, {
+        headers: { Authorization: `Bearer ${kycApiKey}` }, timeout: 8000,
+      });
+      userId = String((session as Record<string, unknown>).external_id ?? '');
+    } catch (fetchErr) {
+      console.error('⚠️  KYC webhook: failed to fetch session for externalId resolution', fetchErr);
+    }
+  }
+
+  if (!userId) {
+    console.error('⚠️  KYC webhook: cannot resolve user_id — acknowledging without action');
+    res.status(200).json({ received: true }); return;
+  }
+
+  // ── Update kyc_status ──────────────────────────────────────────────────────
+  const newStatus: KycStatus =
+    eventType === 'session.approved'     ? 'approved' :
+    eventType === 'session.rejected'     ? 'rejected'  :
+    /* session.manual_review */            'pending';
+
+  try {
+    await updateKycStatus(userId, newStatus);
+  } catch (dbErr) {
+    console.error(`⚠️  KYC webhook: failed to update kyc_status for user=${userId}`, dbErr);
+    // Still ack — the webhook service shouldn't keep retrying a DB error
+    res.status(200).json({ received: true }); return;
+  }
+
+  // ── Notify user / ops ──────────────────────────────────────────────────────
+  getUserById(userId).then(u => {
+    if (!u) return;
+    if (newStatus === 'approved') {
+      sendKycSubmitted(u.email, u.first_name);
+    } else {
+      sendAdminKycAlert(u.email, u.user_id, `${u.first_name} ${u.last_name}`);
+    }
+  }).catch(() => {});
+
+  console.log(`✅  KYC webhook processed: user=${userId} → ${newStatus}`);
   res.status(200).json({ received: true });
 });
 

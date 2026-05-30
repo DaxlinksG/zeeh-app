@@ -21,7 +21,7 @@ import crypto from 'crypto';
 import axios from 'axios';
 import {
   getUserById, getUserByEmail,
-  updateUserProfile, submitKyc, getKyc, updateKycStatus,
+  updateUserProfile, getKyc,
   setTransactionPin, verifyTransactionPin, hasPinSet,
 } from '../lib/userStore';
 import {
@@ -40,7 +40,6 @@ import { requireKyc, requireEmailVerified, requirePin } from '../middleware/user
 import { userTransferLimiter } from '../middleware/rateLimiter';
 import { auditLog } from '../middleware/logger';
 import {
-  sendKycSubmitted, sendAdminKycAlert,
   sendMoneySent, sendMoneyReceived,
   sendSwapCompleted,
   sendTransferInitiated,
@@ -134,212 +133,54 @@ router.put('/profile', async (req: Request, res: Response, next: NextFunction) =
 });
 
 // ── KYC ────────────────────────────────────────────────────────────────────
-const kycSchema = z.object({
-  date_of_birth: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Use YYYY-MM-DD format'),
-  nationality:   z.string().min(2).max(60),
-  address: z.object({
-    street:      z.string().min(2),
-    city:        z.string().min(2),
-    state:       z.string().min(2),
-    country:     z.string().min(2),
-    postal_code: z.string().min(2),
-  }),
-  id_type:   z.enum(['passport', 'drivers_license', 'national_id']),
-  id_number: z.string().min(3).max(50),
-});
-
-router.post('/kyc', async (req: Request, res: Response, next: NextFunction) => {
+//
+// Delegates entirely to the standalone KYC service at kyc.zeehfi.ca.
+//
+// Flow:
+//   1. App calls POST /me/kyc/start → backend creates a session at kyc.zeehfi.ca
+//      and returns a widget_url for the frontend to open.
+//   2. User completes verification inside the widget (doc scan + liveness).
+//   3. kyc.zeehfi.ca fires a webhook to POST /webhooks/kyc (handled in index.ts).
+//   4. Webhook handler updates the user's kyc_status in DynamoDB.
+//
+router.post('/kyc/start', requireEmailVerified, async (req: Request, res: Response, next: NextFunction) => {
   try {
     if (req.user!.kyc_status === 'approved') {
       res.status(400).json({ success: false, message: 'KYC already approved' }); return;
     }
-    const parsed = kycSchema.safeParse(req.body);
-    if (!parsed.success) {
-      res.status(400).json({ success: false, errors: parsed.error.flatten() }); return;
-    }
-    const record = await submitKyc(req.user!.user_id, parsed.data);
 
-    // Notify user + admin (fire-and-forget)
-    const u = await getUserById(req.user!.user_id).catch(() => null);
-    if (u) {
-      sendKycSubmitted(u.email, u.first_name);
-      sendAdminKycAlert(u.email, u.user_id, `${u.first_name} ${u.last_name}`);
-    }
-
-    res.status(201).json({ success: true, message: 'KYC submitted — we will review within 24 hours', data: { submitted_at: record.submitted_at } });
-  } catch (err) { next(err); }
-});
-
-// ── Custom KYC: single secure ID verification endpoint ────────────────────
-//
-// SECURITY DESIGN:
-//   • The user enters their ID number AND types their full name separately.
-//   • We look up the ID, compare the TYPED name against the API result,
-//     and return ONLY boolean match results — never the raw API data.
-//   • This prevents:
-//       1. Data exposure: caller sees nothing about the ID holder
-//       2. Impersonation: must correctly type the name on the ID record
-//          (changing profile name after KYC is blocked on PUT /me/profile)
-//
-// COMPLIANCE (NDPR / FINTRAC):
-//   • We store only the verification RESULT, not the raw ID data or images.
-//   • Raw API responses are discarded after comparison.
-//   • Audit log records the event without PII.
-//
-router.post('/kyc/verify-id', requireEmailVerified, async (req: Request, res: Response, next: NextFunction) => {
-  try {
-    const { id_type, id_number, full_name } = req.body ?? {};
-
-    if (!id_type || !['bvn', 'nin'].includes(id_type)) {
-      res.status(400).json({ success: false, message: 'id_type must be bvn or nin' }); return;
-    }
-    if (!id_number || !/^\d{11}$/.test(String(id_number))) {
-      res.status(400).json({ success: false, message: `${id_type.toUpperCase()} must be exactly 11 digits` }); return;
-    }
-    if (!full_name || String(full_name).trim().length < 2) {
-      res.status(400).json({ success: false, message: 'full_name is required' }); return;
-    }
-
-    const secretKey = process.env.ZEEH_KYC_SECRET_KEY;
-    if (!secretKey) { res.status(500).json({ success: false, message: 'KYC service not configured' }); return; }
-
-    // ── Lookup the ID via Zeeh API ──────────────────────────────────────────
-    const endpoint = id_type === 'bvn'
-      ? 'https://api.usezeeh.com/v1/nigeria_kyc/lookup_bvn_advance'
-      : 'https://api.usezeeh.com/v1/nigeria_kyc/lookup_nin';
-    const body = id_type === 'bvn' ? { bvn: String(id_number) } : { nin: String(id_number) };
-
-    let apiData: Record<string, unknown>;
-    try {
-      const { data: zeehRes } = await axios.post(endpoint, body,
-        { headers: { 'secret-key': secretKey, 'Content-Type': 'application/json' }, timeout: 20000 },
-      );
-      if (!zeehRes.success && !zeehRes.status) {
-        // ID not found — return generic message, don't reveal why
-        res.status(400).json({ success: false, message: `${id_type.toUpperCase()} not found or invalid. Please check the number and try again.` }); return;
-      }
-      apiData = zeehRes.data as Record<string, unknown>;
-    } catch (apiErr: unknown) {
-      const status = axios.isAxiosError(apiErr) ? apiErr.response?.status : 0;
-      const msg = status === 404 || status === 400
-        ? `${id_type.toUpperCase()} not found. Please check the number.`
-        : 'ID verification service is temporarily unavailable. Please try again.';
-      res.status(status === 404 || status === 400 ? 400 : 503).json({ success: false, message: msg }); return;
-    }
-
-    // ── Name comparison — server side only, NEVER returned to client ────────
-    const norm = (s: unknown) => String(s ?? '').toLowerCase().replace(/[^a-z]/g, ' ').replace(/\s+/g, ' ').trim();
-
-    const apiFullName  = norm(`${apiData.firstName ?? ''} ${apiData.lastName ?? ''}`);
-    const enteredName  = norm(full_name);
-    const enteredParts = enteredName.split(' ').filter(Boolean);
-
-    // Flexible match: entered name tokens must all appear in the API name
-    const nameMatch = enteredParts.length >= 2 &&
-      enteredParts.every(part => apiFullName.includes(part));
-
-    // ── Audit log — no PII, just the event ─────────────────────────────────
-    const idHash = crypto.createHash('sha256').update(String(id_number)).digest('hex').substring(0, 16);
-    auditLog('kyc.verify_id', req, { id_type, id_hash: idHash, nameMatch });
-
-    // ── Return ONLY boolean results — raw API data is discarded ─────────────
-    res.json({
-      success: true,
-      data: { found: true, nameMatch },
-    });
-  } catch (err) { next(err); }
-});
-
-// ── Custom KYC: minimal submission ────────────────────────────────────────
-//
-// Stores ONLY the verification result — no raw ID data, no images.
-// Compliant with NDPR (data minimisation) and FINTRAC (5-year audit trail).
-//
-router.post('/kyc/submit', requireEmailVerified, async (req: Request, res: Response, next: NextFunction) => {
-  try {
-    const { id_type, id_number, name_match, passport_done, liveness_done } = req.body ?? {};
-
-    if (!id_type || !id_number) {
-      res.status(400).json({ success: false, message: 'id_type and id_number required' }); return;
-    }
-    if (!passport_done || !liveness_done) {
-      res.status(400).json({ success: false, message: 'Passport and liveness steps must be completed' }); return;
-    }
-
-    const userId = req.user!.user_id;
-    const idHash = crypto.createHash('sha256').update(String(id_number)).digest('hex');
-
-    // Store only the verification RESULT — never the raw API response
-    await submitKyc(userId, {
-      date_of_birth: '',
-      nationality:   'Nigerian',
-      id_type:       'national_id',
-      id_number:     idHash,          // store hash only, not the actual BVN/NIN
-      address:       { street: '', city: '', state: '', country: 'Nigeria', postal_code: '' },
-      // Minimal audit fields
-      ...({ verification_id_type: id_type, name_match: !!name_match, liveness_completed: true } as object),
-    } as Parameters<typeof submitKyc>[1]);
-
-    // Auto-approve on name match + completed biometric steps, else manual review
-    const autoApprove = name_match === true && passport_done === true && liveness_done === true;
-    if (autoApprove) await updateKycStatus(userId, 'approved');
-
-    const u = await getUserById(userId).catch(() => null);
-    if (u) {
-      sendKycSubmitted(u.email, u.first_name);
-      if (!autoApprove) sendAdminKycAlert(u.email, u.user_id, `${u.first_name} ${u.last_name}`);
-    }
-
-    const newStatus = autoApprove ? 'approved' : 'pending';
-    auditLog('kyc.submit', req, { id_type, nameMatch: !!name_match, autoApprove });
-    res.json({ success: true, data: { kyc_status: newStatus } });
-  } catch (err) { next(err); }
-});
-
-// ── KYC widget completion (called by the Zeeh KYC React SDK onComplete) ────
-// The widget runs server-side checks itself. When onComplete fires, the session
-// has already been verified by Zeeh. We confirm via the secret key then mark
-// the user as approved immediately (no manual review needed for widget path).
-router.post('/kyc/widget-complete', requireEmailVerified, async (req: Request, res: Response, next: NextFunction) => {
-  try {
-    const { sessionId } = req.body ?? {};
-    if (!sessionId) {
-      res.status(400).json({ success: false, message: 'sessionId required' }); return;
-    }
-
-    const secretKey = process.env.ZEEH_KYC_SECRET_KEY;
-    if (!secretKey) {
-      console.error('ZEEH_KYC_SECRET_KEY not configured');
+    const kycApiKey = process.env.KYC_API_KEY;
+    const kycBase   = process.env.KYC_SERVICE_URL ?? 'https://kyc.zeehfi.ca';
+    if (!kycApiKey) {
       res.status(500).json({ success: false, message: 'KYC service not configured' }); return;
     }
 
-    // Verify the session with Zeeh's API using the secret key
-    let verified = false;
-    try {
-      const verifyRes = await axios.get(
-        `https://api.zeeh.africa/api/v1/kyc/sessions/${sessionId}/verify`,
-        { headers: { Authorization: `Bearer ${secretKey}` } },
-      );
-      verified = verifyRes.data?.data?.status === 'approved' || verifyRes.data?.success === true;
-    } catch (verifyErr: unknown) {
-      // If verification endpoint fails, fall back to marking as pending
-      console.warn('KYC session verify API error:', (verifyErr as Error).message);
-      verified = false;
-    }
+    const u = await getUserById(req.user!.user_id);
+    if (!u) { res.status(404).json({ success: false, message: 'User not found' }); return; }
 
-    const newStatus = verified ? 'approved' : 'pending';
-    await updateKycStatus(req.user!.user_id, newStatus);
+    // Pass the user's ID as externalId so the webhook can resolve it back to this user.
+    const { data: session } = await axios.post(
+      `${kycBase}/v1/sessions`,
+      {
+        externalId: u.user_id,
+        metadata:   { email: u.email, first_name: u.first_name, last_name: u.last_name },
+      },
+      {
+        headers: { Authorization: `Bearer ${kycApiKey}`, 'Content-Type': 'application/json' },
+        timeout: 10000,
+      },
+    );
 
-    // Notify
-    const u = await getUserById(req.user!.user_id).catch(() => null);
-    if (u && newStatus === 'approved') {
-      sendKycSubmitted(u.email, u.first_name);
-    } else if (u) {
-      sendAdminKycAlert(u.email, u.user_id, `${u.first_name} ${u.last_name}`);
-    }
+    auditLog('kyc.session_started', req, { session_id: session.session_id });
 
-    auditLog('kyc.widget_complete', req, { sessionId, result: newStatus });
-    res.json({ success: true, data: { kyc_status: newStatus } });
+    res.json({
+      success: true,
+      data: {
+        session_id: session.session_id,
+        widget_url: session.widget_url,
+        expires_at: session.expires_at,
+      },
+    });
   } catch (err) { next(err); }
 });
 
