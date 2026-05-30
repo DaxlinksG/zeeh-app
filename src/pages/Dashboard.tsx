@@ -133,7 +133,7 @@ export default function Dashboard() {
             {actionItems.length} action{actionItems.length > 1 ? 's' : ''} needed
           </div>
           {actionItems.map((item, i) => (
-            <div key={item.key} style={{ display: 'flex', alignItems: 'center', gap: '.8rem', padding: '.55rem 0', borderBottom: i < actionItems.length - 1 ? '1px solid rgba(255,255,255,0.07)' : 'none' }}>
+            <div key={item.key} style={{ display: 'flex', alignItems: 'center', gap: '.8rem', padding: '.55rem 0', borderBottom: i < actionItems.length - 1 ? '1px solid var(--border)' : 'none' }}>
               <span style={{ fontSize: '1.2rem', width: 28, textAlign: 'center', flexShrink: 0 }}>{item.icon}</span>
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ fontWeight: 600, fontSize: '.88rem' }}>{item.title}</div>
@@ -267,7 +267,7 @@ export default function Dashboard() {
               <div style={{ display: 'flex', alignItems: 'center', gap: '.7rem', marginBottom: '1rem' }}>
                 <div style={{
                   width: 40, height: 40, borderRadius: 12,
-                  background: 'rgba(255,255,255,0.08)',
+                  background: 'var(--surface2)',
                   display: 'grid', placeItems: 'center',
                   fontSize: '1.3rem', flexShrink: 0,
                 }}>

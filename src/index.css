@@ -15,7 +15,7 @@
 
   /* Text */
   --text:  #eaeaff;
-  --muted: rgba(175,175,225,0.50);
+  --muted: rgba(190,190,235,0.75);
 
   /* Brand (same in both modes) */
   --accent:        #8b5cf6;
@@ -67,11 +67,11 @@
 @media (prefers-color-scheme: light) {
   :root {
     --bg:       #eeedff;
-    --surface:  rgba(255,255,255,0.88);
-    --surface2: rgba(255,255,255,0.96);
-    --border:   rgba(0,0,10,0.09);
+    --surface:  rgba(255,255,255,0.95);
+    --surface2: rgba(255,255,255,0.99);
+    --border:   rgba(0,0,10,0.14);
     --text:  #0a091c;
-    --muted: rgba(10,9,40,0.46);
+    --muted: rgba(10,9,40,0.65);
     --card-shadow:    0 4px 20px rgba(100,80,200,0.1), inset 0 1px 0 rgba(255,255,255,0.95);
     --card-shimmer:   rgba(255,255,255,0.85);
     --input-bg:       rgba(0,0,0,0.04);
@@ -102,7 +102,7 @@
   --surface2: rgba(255,255,255,0.09);
   --border:   rgba(255,255,255,0.08);
   --text:  #eaeaff;
-  --muted: rgba(175,175,225,0.50);
+  --muted: rgba(190,190,235,0.75);
   --card-shadow:    0 8px 32px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.07);
   --card-shimmer:   rgba(255,255,255,0.13);
   --input-bg:       rgba(255,255,255,0.05);
@@ -120,11 +120,11 @@
 /* Force light even when system is dark */
 [data-theme="light"] {
   --bg:       #eeedff;
-  --surface:  rgba(255,255,255,0.72);
-  --surface2: rgba(255,255,255,0.90);
-  --border:   rgba(0,0,10,0.09);
+  --surface:  rgba(255,255,255,0.95);
+  --surface2: rgba(255,255,255,0.99);
+  --border:   rgba(0,0,10,0.14);
   --text:  #0a091c;
-  --muted: rgba(10,9,40,0.46);
+  --muted: rgba(10,9,40,0.65);
   --card-shadow:    0 4px 20px rgba(100,80,200,0.1), inset 0 1px 0 rgba(255,255,255,0.95);
   --card-shimmer:   rgba(255,255,255,0.85);
   --input-bg:       rgba(0,0,0,0.04);
@@ -141,8 +141,6 @@
   --badge-warn:   #92400e;
   --badge-red:    #be123c;
   --badge-purple: #6d28d9;
-  --surface:  rgba(255,255,255,0.88);
-  --surface2: rgba(255,255,255,0.96);
 }
 
 /* ─── Reset + Base ───────────────────────────────────────────── */

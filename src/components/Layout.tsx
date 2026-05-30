@@ -12,7 +12,6 @@ const navItems = [
 
 // These appear in the desktop sidebar but are not crammed into the 5-item mobile bottom nav
 const sidebarExtra = [
-  { to: '/pay',           label: 'Pay',          icon: '🏦' },
   { to: '/beneficiaries', label: 'Beneficiaries', icon: '👥' },
 ];
 
