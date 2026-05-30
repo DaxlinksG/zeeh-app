@@ -85,7 +85,7 @@ app.use((req, _res, next) => {
     next();
   }
 });
-app.use(express.json());
+app.use(express.json({ limit: '8mb' })); // KYC upload routes send base64 images (~200–600 KB each)
 app.use(requestId);    // attach x-request-id to every request
 app.use(httpLogger);   // log every HTTP request
 
