@@ -173,11 +173,16 @@ router.post('/kyc/start', requireEmailVerified, async (req: Request, res: Respon
 
     auditLog('kyc.session_started', req, { session_id: session.session_id });
 
+    // widget_url from the KYC service is a relative path — make it absolute
+    const widgetUrl = session.widget_url?.startsWith('http')
+      ? session.widget_url
+      : `${kycBase}${session.widget_url}`;
+
     res.json({
       success: true,
       data: {
         session_id: session.session_id,
-        widget_url: session.widget_url,
+        widget_url: widgetUrl,
         expires_at: session.expires_at,
       },
     });
