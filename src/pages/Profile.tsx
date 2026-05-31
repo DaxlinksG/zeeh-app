@@ -1,5 +1,5 @@
-import { useEffect, useState, useRef } from 'react';
-import { useNavigate, useSearchParams } from 'react-router-dom';
+import { useEffect, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import api from '../lib/api';
 import { useAuthStore } from '../store/authStore';
 import { toast } from '../components/Toast';
@@ -26,8 +26,7 @@ const THEME_OPTIONS: { value: ThemePreference; label: string; icon: string }[] =
 
 export default function Profile() {
   const { user, updateUser, logout } = useAuthStore();
-  const navigate      = useNavigate();
-  const [searchParams, setSearchParams] = useSearchParams();
+  const navigate   = useNavigate();
   const [loading,  setLoading]  = useState(false);
   const [tab,      setTab]      = useState<Tab>('profile');
   const [themePref, setThemePref] = useState<ThemePreference>(getThemePreference);
@@ -56,33 +55,6 @@ export default function Profile() {
     }).catch(() => {});
   }, [updateUser]);
 
-  // Detect return from kyc.zeehfi.ca/verify — poll until status changes
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  useEffect(() => {
-    if (!searchParams.get('kyc_done')) return;
-    // Clear the query param so refresh doesn't re-trigger
-    setSearchParams({}, { replace: true });
-    setTab('kyc');
-    toast('Verification submitted — checking status…');
-
-    pollRef.current = setInterval(async () => {
-      try {
-        const { data } = await api.get('/me/profile');
-        const status: KycStatus = data?.data?.kyc_status ?? 'none';
-        if (status === 'approved' || status === 'pending' || status === 'rejected') {
-          clearInterval(pollRef.current!);
-          updateUser({ kyc_status: status });
-          if (status === 'approved') toast('Identity verified! ✅');
-          else if (status === 'pending') toast('Documents received — under review 👍');
-          else toast('Verification not approved — please re-submit', 'err');
-        }
-      } catch { /* retry */ }
-    }, 4000);
-
-    // Stop polling after 2 minutes max
-    const timeout = setTimeout(() => clearInterval(pollRef.current!), 120_000);
-    return () => { clearInterval(pollRef.current!); clearTimeout(timeout); };
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   function handleTheme(pref: ThemePreference) {
     setThemePref(pref);

@@ -1,16 +1,17 @@
 /**
- * KycWizard — redirects to kyc.zeehfi.ca/verify for the full hosted KYC flow.
+ * KycWizard — embeds kyc.zeehfi.ca/verify as a full-screen iframe.
  *
  * Flow:
  *  1. User taps "Start Verification"
- *  2. Backend creates a session (POST /me/kyc/start) → returns verify_url
- *  3. We navigate window.location.href to the verify URL
- *  4. kyc.zeehfi.ca handles doc capture, liveness check, processing
- *  5. On completion, redirects back to /profile?kyc_done=1
- *  6. Profile detects kyc_done param, polls status, shows result toast
+ *  2. Backend creates a session → returns verify_url
+ *  3. Full-screen iframe shows the KYC widget (doc capture + liveness)
+ *  4. We poll GET /me/profile every 5s to detect completion via webhook
+ *  5. On status change → notify parent, iframe closes
+ *
+ * CORS and X-Frame-Options are open on kyc.zeehfi.ca, so embedding works.
  */
 
-import { useState } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import api from '../lib/api';
 
 export interface KycWizardProps {
@@ -19,18 +20,40 @@ export interface KycWizardProps {
   onError?: (msg: string) => void;
 }
 
-type Step = 'intro' | 'loading' | 'error';
+type Step = 'intro' | 'loading' | 'widget' | 'error';
 
-export function KycWizard({ onError }: KycWizardProps) {
-  const [step,  setStep]  = useState<Step>('intro');
-  const [error, setError] = useState('');
+export function KycWizard({ onComplete, onError }: KycWizardProps) {
+  const [step,      setStep]      = useState<Step>('intro');
+  const [verifyUrl, setVerifyUrl] = useState('');
+  const [error,     setError]     = useState('');
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // Poll profile while the widget is open
+  useEffect(() => {
+    if (step !== 'widget') {
+      if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
+      return;
+    }
+    pollRef.current = setInterval(async () => {
+      try {
+        const { data } = await api.get('/me/profile');
+        const status: string = data?.data?.kyc_status ?? 'none';
+        if (status === 'approved' || status === 'pending') {
+          clearInterval(pollRef.current!);
+          pollRef.current = null;
+          onComplete(status as 'approved' | 'pending');
+        }
+      } catch { /* retry */ }
+    }, 5000);
+    return () => { if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; } };
+  }, [step, onComplete]);
 
   async function startKyc() {
     setStep('loading');
     try {
       const { data } = await api.post('/me/kyc/start');
-      // Navigate to the hosted KYC widget — handles doc capture + liveness natively
-      window.location.href = data.data.verify_url;
+      setVerifyUrl(data.data.verify_url);
+      setStep('widget');
     } catch (err: unknown) {
       const msg =
         (err as { response?: { data?: { message?: string } } })?.response?.data?.message
@@ -51,7 +74,7 @@ export function KycWizard({ onError }: KycWizardProps) {
       <div style={{ display: 'flex', flexDirection: 'column', gap: '.6rem' }}>
         {([
           ['📄', 'A passport, national ID, or driver\'s licence'],
-          ['📸', 'Camera access for document and face scan'],
+          ['📸', 'Camera for document scan and face check'],
           ['🔒', 'Encrypted and NDPR / FINTRAC compliant'],
         ] as [string, string][]).map(([icon, text]) => (
           <div key={text} style={{ display: 'flex', alignItems: 'center', gap: '.7rem', fontSize: '.86rem', color: 'var(--muted)' }}>
@@ -69,15 +92,50 @@ export function KycWizard({ onError }: KycWizardProps) {
   if (step === 'loading') return (
     <div style={{ textAlign: 'center', padding: '2rem 0', display: 'flex', flexDirection: 'column', gap: '1rem', alignItems: 'center', color: 'var(--muted)' }}>
       <span className="spinner" />
-      <span style={{ fontSize: '.88rem' }}>Opening verification…</span>
+      <span style={{ fontSize: '.88rem' }}>Starting verification…</span>
     </div>
   );
 
-  return (
+  if (step === 'error') return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
       <div style={{ color: 'var(--danger, #f43f5e)', fontWeight: 600 }}>Could not start verification</div>
       <p style={{ fontSize: '.86rem', color: 'var(--muted)', margin: 0 }}>{error}</p>
       <button className="btn btn-primary" onClick={() => { setError(''); setStep('intro'); }}>Try Again</button>
+    </div>
+  );
+
+  // Full-screen iframe overlay
+  return (
+    <div style={{
+      position: 'fixed', inset: 0, zIndex: 1000,
+      display: 'flex', flexDirection: 'column',
+      background: '#fff',
+    }}>
+      {/* Thin top bar with cancel */}
+      <div style={{
+        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+        padding: '10px 16px', flexShrink: 0,
+        background: 'var(--bg, #07070f)',
+        borderBottom: '1px solid var(--border, rgba(255,255,255,0.08))',
+      }}>
+        <span style={{ fontSize: '.85rem', fontWeight: 600, color: 'var(--text, #eaeaff)' }}>
+          Identity Verification
+        </span>
+        <button
+          onClick={() => setStep('intro')}
+          style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--muted, #888)', fontSize: '1.3rem', lineHeight: 1, padding: '4px 8px' }}
+          aria-label="Cancel verification"
+        >
+          ✕
+        </button>
+      </div>
+
+      <iframe
+        src={verifyUrl}
+        style={{ flex: 1, border: 'none', display: 'block' }}
+        allow="camera; microphone"
+        title="Identity Verification"
+      />
     </div>
   );
 }
