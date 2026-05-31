@@ -158,12 +158,17 @@ router.post('/kyc/start', requireEmailVerified, async (req: Request, res: Respon
     const u = await getUserById(req.user!.user_id);
     if (!u) { res.status(404).json({ success: false, message: 'User not found' }); return; }
 
+    // After KYC is complete, redirect the user back to the app's profile page.
+    const appOrigin = process.env.APP_ORIGIN ?? 'https://app.zeehfi.ca';
+    const redirectUrl = `${appOrigin}/profile?kyc_done=1`;
+
     // Pass the user's ID as externalId so the webhook can resolve it back to this user.
     const { data: session } = await axios.post(
       `${kycBase}/v1/sessions`,
       {
-        externalId: u.user_id,
-        metadata:   { email: u.email, first_name: u.first_name, last_name: u.last_name },
+        externalId:   u.user_id,
+        metadata:     { email: u.email, first_name: u.first_name, last_name: u.last_name },
+        redirect_url: redirectUrl,
       },
       {
         headers: { Authorization: `Bearer ${kycApiKey}`, 'Content-Type': 'application/json' },
@@ -171,14 +176,17 @@ router.post('/kyc/start', requireEmailVerified, async (req: Request, res: Respon
       },
     );
 
+    // Build the full verify URL — user navigates here to complete KYC
+    const verifyUrl = `${kycBase}/verify?session_token=${session.session_token}`;
+
     auditLog('kyc.session_started', req, { session_id: session.session_id });
 
     res.json({
       success: true,
       data: {
-        session_id:    session.session_id,
-        session_token: session.session_token,
-        expires_at:    session.expires_at,
+        session_id: session.session_id,
+        verify_url: verifyUrl,
+        expires_at: session.expires_at,
       },
     });
   } catch (err) { next(err); }
