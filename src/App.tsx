@@ -70,49 +70,50 @@ const INACTIVITY_MS  = 5 * 60 * 1000;        // 5 minutes
 const SESSION_MAX_MS = 24 * 60 * 60 * 1000;  // 24 hours absolute session
 
 function SessionGuard() {
-  const { logout, user, loginAt } = useAuthStore();
+  const { logout, user, loginAt, lastActiveAt, touchActive } = useAuthStore();
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // Check if the user has been idle or the absolute session has expired.
+  // Runs on every mount (browser open, app launch, foreground resume).
+  const checkExpiry = useCallback(() => {
+    if (!user) return;
+    const now = Date.now();
+    if (loginAt     && now - loginAt     > SESSION_MAX_MS) { logout(); return; }
+    if (lastActiveAt && now - lastActiveAt > INACTIVITY_MS) { logout(); return; }
+  }, [user, loginAt, lastActiveAt, logout]);
+
   const resetTimer = useCallback(() => {
+    touchActive(); // persist last-active timestamp so kills/relaunches can check it
     if (timerRef.current) clearTimeout(timerRef.current);
     timerRef.current = setTimeout(logout, INACTIVITY_MS);
-  }, [logout]);
+  }, [logout, touchActive]);
 
-  // Absolute session check — runs on every mount (browser open/refresh).
-  // If it's been more than 24 hours since login, force logout immediately.
+  // On every mount: check if session/idle has already expired
   useEffect(() => {
-    if (!user) return;
-    if (loginAt && Date.now() - loginAt > SESSION_MAX_MS) {
-      logout();
-    }
+    checkExpiry();
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Activity listeners
+  // Activity listeners — browser + Android WebView touch/click/keyboard
   useEffect(() => {
     if (!user) return;
     const events = ['click', 'touchstart', 'keypress'] as const;
     events.forEach(e => window.addEventListener(e, resetTimer, { passive: true }));
-    resetTimer(); // start the clock immediately on login
+    resetTimer();
     return () => {
       events.forEach(e => window.removeEventListener(e, resetTimer));
       if (timerRef.current) clearTimeout(timerRef.current);
     };
   }, [user, resetTimer]);
 
-  // Foreground resume — if the user left the app for 15+ min, log out on return
+  // Capacitor foreground resume — checks idle on every app foreground
   useEffect(() => {
     if (!user) return;
-    let lastBackground = 0;
     import('@capacitor/app').then(({ App: CapApp }) => {
       CapApp.addListener('appStateChange', ({ isActive }) => {
-        if (!isActive) {
-          lastBackground = Date.now();
-        } else if (Date.now() - lastBackground > INACTIVITY_MS) {
-          logout();
-        }
+        if (isActive) checkExpiry();
       });
     });
-  }, [user, logout]);
+  }, [user, checkExpiry]);
 
   return null;
 }

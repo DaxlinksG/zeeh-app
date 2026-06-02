@@ -14,14 +14,16 @@ interface AuthUser {
 }
 
 interface AuthState {
-  user:         AuthUser | null;
-  accessToken:  string | null;
-  refreshToken: string | null;
-  loginAt:      number | null;
-  setAuth:      (user: AuthUser, access: string, refresh: string) => void;
-  logout:       () => void;
-  refresh:      () => Promise<void>;
-  updateUser:   (partial: Partial<AuthUser>) => void;
+  user:          AuthUser | null;
+  accessToken:   string | null;
+  refreshToken:  string | null;
+  loginAt:       number | null;
+  lastActiveAt:  number | null;   // updated on every user interaction; persisted so kills/relaunches can check it
+  setAuth:       (user: AuthUser, access: string, refresh: string) => void;
+  logout:        () => void;
+  refresh:       () => Promise<void>;
+  updateUser:    (partial: Partial<AuthUser>) => void;
+  touchActive:   () => void;      // call on any user interaction
 }
 
 export const useAuthStore = create<AuthState>()(
@@ -31,19 +33,22 @@ export const useAuthStore = create<AuthState>()(
       accessToken:  null,
       refreshToken: null,
       loginAt:      null,
+      lastActiveAt: null,
 
       setAuth: (user: AuthUser, accessToken: string, refreshToken: string) =>
-        set({ user, accessToken, refreshToken, loginAt: Date.now() }),
+        set({ user, accessToken, refreshToken, loginAt: Date.now(), lastActiveAt: Date.now() }),
 
       updateUser: (partial: Partial<AuthUser>) =>
         set((s: AuthState) => ({ user: s.user ? { ...s.user, ...partial } : s.user })),
+
+      touchActive: () => set({ lastActiveAt: Date.now() }),
 
       logout: () => {
         const rt = get().refreshToken;
         if (rt) {
           axios.post(`${API_BASE}/auth/logout`, { refresh_token: rt }).catch(() => {});
         }
-        set({ user: null, accessToken: null, refreshToken: null, loginAt: null });
+        set({ user: null, accessToken: null, refreshToken: null, loginAt: null, lastActiveAt: null });
       },
 
       refresh: async () => {
