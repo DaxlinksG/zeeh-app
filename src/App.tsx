@@ -61,12 +61,12 @@ function AndroidBackHandler() {
 }
 
 /**
- * Inactivity logout — 15 minutes with no interaction (standard Canadian banking).
+ * Inactivity logout — 5 minutes with no interaction.
  * Absolute session — 24 hours from login, regardless of activity.
  * Tracks: click, touchstart, keypress.
  * Also checks on Capacitor foreground resume so returning after a long pause logs out.
  */
-const INACTIVITY_MS  = 15 * 60 * 1000;       // 15 minutes
+const INACTIVITY_MS  = 5 * 60 * 1000;        // 5 minutes
 const SESSION_MAX_MS = 24 * 60 * 60 * 1000;  // 24 hours absolute session
 
 function SessionGuard() {
