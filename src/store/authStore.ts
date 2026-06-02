@@ -43,7 +43,7 @@ export const useAuthStore = create<AuthState>()(
         if (rt) {
           axios.post(`${API_BASE}/auth/logout`, { refresh_token: rt }).catch(() => {});
         }
-        set({ user: null, accessToken: null, refreshToken: null });
+        set({ user: null, accessToken: null, refreshToken: null, loginAt: null });
       },
 
       refresh: async () => {

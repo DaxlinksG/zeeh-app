@@ -62,19 +62,30 @@ function AndroidBackHandler() {
 
 /**
  * Inactivity logout — 15 minutes with no interaction (standard Canadian banking).
+ * Absolute session — 24 hours from login, regardless of activity.
  * Tracks: click, touchstart, keypress.
  * Also checks on Capacitor foreground resume so returning after a long pause logs out.
  */
-const INACTIVITY_MS = 15 * 60 * 1000; // 15 minutes
+const INACTIVITY_MS  = 15 * 60 * 1000;       // 15 minutes
+const SESSION_MAX_MS = 24 * 60 * 60 * 1000;  // 24 hours absolute session
 
 function SessionGuard() {
-  const { logout, user } = useAuthStore();
+  const { logout, user, loginAt } = useAuthStore();
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const resetTimer = useCallback(() => {
     if (timerRef.current) clearTimeout(timerRef.current);
     timerRef.current = setTimeout(logout, INACTIVITY_MS);
   }, [logout]);
+
+  // Absolute session check — runs on every mount (browser open/refresh).
+  // If it's been more than 24 hours since login, force logout immediately.
+  useEffect(() => {
+    if (!user) return;
+    if (loginAt && Date.now() - loginAt > SESSION_MAX_MS) {
+      logout();
+    }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Activity listeners
   useEffect(() => {
