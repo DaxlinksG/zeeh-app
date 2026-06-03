@@ -87,12 +87,13 @@ export interface NigerianCreditReport {
 }
 
 export interface CreditRecord {
-  user_id:          string;
-  bvn_encrypted:    string;
-  nigerian_report:  NigerianCreditReport | null;
-  canadian_report:  null;           // future: Equifax / TransUnion
-  created_at:       string;
-  updated_at:       string;
+  user_id:           string;
+  bvn_encrypted:     string;
+  nigerian_report:   NigerianCreditReport | null;
+  canadian_report:   null;           // future: Equifax / TransUnion
+  created_at:        string;
+  updated_at:        string;
+  last_refreshed_at?: string;        // rate-limit anchor for manual refreshes
 }
 
 // ── CRUD ───────────────────────────────────────────────────────────────────

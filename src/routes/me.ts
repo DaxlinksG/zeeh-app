@@ -858,7 +858,6 @@ router.post('/swap', requireEmailVerified, requirePin, requireKyc, userTransferL
 
 // ── Credit Passport ────────────────────────────────────────────────────────
 //
-// Nigerian credit score (CRC FICO) + Canadian stub.
 // BVN is stored AES-256-GCM encrypted; never logged or returned to client.
 // Uses the same Zeeh Africa API key as KYC.
 //
@@ -868,43 +867,89 @@ const ZEEH_HEADERS = () => ({
   'Content-Type': 'application/json',
 });
 
-async function fetchCrcReport(bvn: string): Promise<NigerianCreditReport> {
-  // Fetch FICO score + full premium report in parallel
+const CREDIT_REFRESH_DAYS = 30;
+
+interface CrcFetchResult {
+  report:         NigerianCreditReport;
+  consumerFirst:  string;  // name from bureau — for ownership check only, never stored
+  consumerLast:   string;
+}
+
+async function fetchCrcReport(bvn: string): Promise<CrcFetchResult> {
   const [scoreRes, fullRes] = await Promise.all([
     axios.post(`${ZEEH_BASE}/credit_reports/crc_score`,   { bvn, consent: true }, { headers: ZEEH_HEADERS(), timeout: 20000 }),
     axios.post(`${ZEEH_BASE}/credit_reports/crc_premium`, { bvn, consent: true }, { headers: ZEEH_HEADERS(), timeout: 20000 }),
   ]);
 
-  const s  = scoreRes.data?.data?.score ?? {};
-  const f  = fullRes.data?.data?.score  ?? {};
+  const s = scoreRes.data?.data?.score ?? {};
+  const f = fullRes.data?.data?.score  ?? {};
+
+  // CRC uses several different field names across response versions — try all of them
+  const consumerFirst = String(
+    f.firstName ?? f.consumerFirstName ?? f.customerFirstName ??
+    s.firstName ?? s.consumerFirstName ?? ''
+  ).trim();
+  const consumerLast = String(
+    f.lastName ?? f.surname ?? f.consumerLastName ?? f.customerLastName ??
+    s.lastName ?? s.surname ?? s.consumerLastName ?? ''
+  ).trim();
 
   return {
-    fico_score:            Number(s.ficoScore?.score   ?? 0),
-    fico_rating:           String(s.ficoScore?.rating  ?? ''),
-    fico_reasons:          String(s.ficoScore?.reasons ?? ''),
-    total_loans:           Number(f.totalNoOfLoans             ?? s.totalNoOfLoans             ?? 0),
-    active_loans:          Number(f.totalNoOfActiveLoans       ?? s.totalNoOfActiveLoans       ?? 0),
-    closed_loans:          Number(f.totalNoOfClosedLoans       ?? s.totalNoOfClosedLoans       ?? 0),
-    delinquent_facilities: Number(f.totalNoOfDelinquentFacilities ?? s.totalNoOfDelinquentFacilities ?? 0),
-    total_borrowed:        Number(String(f.totalBorrowed  ?? 0).replace(/,/g, '')),
-    total_outstanding:     Number(String(f.totalOutstanding ?? 0).replace(/,/g, '')),
-    total_overdue:         Number(String(f.totalOverdue   ?? 0).replace(/,/g, '')),
-    max_overdue_days:      f.maxNoOfDays ?? null,
-    institutions:          Number(f.totalNoOfInstitutions ?? s.totalNoOfInstitutions ?? 0),
-    credit_enquiries:      Array.isArray(f.creditEnquiries) ? f.creditEnquiries : [],
-    loan_performance:      Array.isArray(f.loanPerformance) ? f.loanPerformance.map((l: Record<string, unknown>) => ({
-      loanProvider:       String(l.loanProvider ?? ''),
-      loanAmount:         String(l.loanAmount   ?? ''),
-      status:             String(l.status       ?? ''),
-      performanceStatus:  String(l.performanceStatus ?? ''),
-      overdueAmount:      String(l.overdueAmount     ?? '0'),
-      outstandingBalance: String(l.outstandingBalance ?? '0'),
-      loanCount:          Number(l.loanCount ?? 1),
-    })) : [],
-    last_reported_date:  String(f.lastReportedDate ?? s.lastReportedDate ?? ''),
-    report_order_number: String(f.crcReportOrderNumber ?? s.crcReportOrderNumber ?? ''),
-    fetched_at:          new Date().toISOString(),
+    consumerFirst,
+    consumerLast,
+    report: {
+      fico_score:            Number(s.ficoScore?.score   ?? 0),
+      fico_rating:           String(s.ficoScore?.rating  ?? ''),
+      fico_reasons:          String(s.ficoScore?.reasons ?? ''),
+      total_loans:           Number(f.totalNoOfLoans             ?? s.totalNoOfLoans             ?? 0),
+      active_loans:          Number(f.totalNoOfActiveLoans       ?? s.totalNoOfActiveLoans       ?? 0),
+      closed_loans:          Number(f.totalNoOfClosedLoans       ?? s.totalNoOfClosedLoans       ?? 0),
+      delinquent_facilities: Number(f.totalNoOfDelinquentFacilities ?? s.totalNoOfDelinquentFacilities ?? 0),
+      total_borrowed:        Number(String(f.totalBorrowed    ?? 0).replace(/,/g, '')),
+      total_outstanding:     Number(String(f.totalOutstanding ?? 0).replace(/,/g, '')),
+      total_overdue:         Number(String(f.totalOverdue     ?? 0).replace(/,/g, '')),
+      max_overdue_days:      f.maxNoOfDays ?? null,
+      institutions:          Number(f.totalNoOfInstitutions ?? s.totalNoOfInstitutions ?? 0),
+      credit_enquiries:      Array.isArray(f.creditEnquiries) ? f.creditEnquiries : [],
+      loan_performance:      Array.isArray(f.loanPerformance) ? f.loanPerformance.map((l: Record<string, unknown>) => ({
+        loanProvider:       String(l.loanProvider ?? ''),
+        loanAmount:         String(l.loanAmount   ?? ''),
+        status:             String(l.status       ?? ''),
+        performanceStatus:  String(l.performanceStatus ?? ''),
+        overdueAmount:      String(l.overdueAmount     ?? '0'),
+        outstandingBalance: String(l.outstandingBalance ?? '0'),
+        loanCount:          Number(l.loanCount ?? 1),
+      })) : [],
+      last_reported_date:  String(f.lastReportedDate ?? s.lastReportedDate ?? ''),
+      report_order_number: String(f.crcReportOrderNumber ?? s.crcReportOrderNumber ?? ''),
+      fetched_at:          new Date().toISOString(),
+    },
   };
+}
+
+// Returns true if the bureau name plausibly matches the account holder's name.
+// Only rejects when we have a bureau name AND it clearly doesn't match — if the
+// bureau returns no name at all we allow through (can't verify what isn't there).
+function nameMatchesAccount(
+  consumerFirst: string,
+  consumerLast:  string,
+  accountFirst:  string,
+  accountLast:   string,
+): boolean {
+  if (!consumerFirst && !consumerLast) return true; // bureau returned no name — can't verify
+
+  const norm = (s: string) => s.toLowerCase().replace(/[^a-z]/g, ' ').trim();
+  const tokens = (s: string) => norm(s).split(/\s+/).filter(t => t.length > 1);
+
+  const bureauTokens  = new Set([...tokens(consumerFirst), ...tokens(consumerLast)]);
+  const accountTokens = new Set([...tokens(accountFirst),  ...tokens(accountLast)]);
+
+  let matches = 0;
+  for (const t of bureauTokens) { if (accountTokens.has(t)) matches++; }
+
+  // Require at least 2 matching tokens, or the full bureau name is a single token
+  // that appears in the account name (e.g. both parties have a single-word name)
+  return matches >= 2 || (bureauTokens.size === 1 && matches === 1);
 }
 
 // POST /me/credit/setup — first-time BVN entry; fetches + stores CRC report
@@ -919,35 +964,45 @@ router.post('/credit/setup', requireEmailVerified, async (req: Request, res: Res
     }
 
     const userId = req.user!.user_id;
+    const user   = await getUserById(userId);
 
-    // Fetch from CRC
-    let report: NigerianCreditReport;
+    let result: CrcFetchResult;
     try {
-      report = await fetchCrcReport(String(bvn));
+      result = await fetchCrcReport(String(bvn));
     } catch (apiErr: unknown) {
       const status = axios.isAxiosError(apiErr) ? apiErr.response?.status : 0;
       const msg = status === 404 || status === 400
-        ? 'BVN not found in credit bureau. Please check the number.'
+        ? 'Credit ID not found. Please check the number and try again.'
         : 'Credit bureau is temporarily unavailable. Please try again.';
       res.status(status === 404 || status === 400 ? 400 : 503).json({ success: false, message: msg }); return;
     }
 
-    const now = new Date().toISOString();
+    // Ownership check — bureau name must match the account holder
+    if (!nameMatchesAccount(result.consumerFirst, result.consumerLast, user!.first_name, user!.last_name)) {
+      auditLog('credit.setup.name_mismatch', req, {});
+      res.status(422).json({
+        success: false,
+        message: "The details on this credit ID don't match your account. Please verify you've entered your own ID.",
+      }); return;
+    }
+
+    const now      = new Date().toISOString();
     const existing = await getCreditRecord(userId);
 
     const record: CreditRecord = {
-      user_id:         userId,
-      bvn_encrypted:   encryptBvn(String(bvn)),
-      nigerian_report: report,
-      canadian_report: null,
-      created_at:      existing?.created_at ?? now,
-      updated_at:      now,
+      user_id:           userId,
+      bvn_encrypted:     encryptBvn(String(bvn)),
+      nigerian_report:   result.report,
+      canadian_report:   null,
+      created_at:        existing?.created_at ?? now,
+      updated_at:        now,
+      last_refreshed_at: now,
     };
     await saveCreditRecord(record);
 
-    auditLog('credit.setup', req, { fico_score: report.fico_score });
+    auditLog('credit.setup', req, { fico_score: result.report.fico_score });
 
-    res.json({ success: true, data: { nigerian_report: report, canadian_report: null } });
+    res.json({ success: true, data: { nigerian_report: result.report, canadian_report: null } });
   } catch (err) { next(err); }
 });
 
@@ -956,32 +1011,52 @@ router.get('/credit', requireEmailVerified, async (req: Request, res: Response, 
   try {
     const record = await getCreditRecord(req.user!.user_id);
     if (!record) {
-      res.json({ success: true, data: null }); return;   // no credit setup yet
+      res.json({ success: true, data: null }); return;
     }
+
+    // Compute when the next refresh is available so the client can display it
+    const nextRefreshAt = record.last_refreshed_at
+      ? new Date(new Date(record.last_refreshed_at).getTime() + CREDIT_REFRESH_DAYS * 86400_000).toISOString()
+      : null;
+
     res.json({
       success: true,
       data: {
-        nigerian_report: record.nigerian_report,
-        canadian_report: record.canadian_report,
-        updated_at:      record.updated_at,
+        nigerian_report:  record.nigerian_report,
+        canadian_report:  record.canadian_report,
+        updated_at:       record.updated_at,
+        next_refresh_at:  nextRefreshAt,
       },
     });
   } catch (err) { next(err); }
 });
 
-// POST /me/credit/refresh — re-fetch report using stored BVN
+// POST /me/credit/refresh — re-fetch report using stored encrypted ID
 router.post('/credit/refresh', requireEmailVerified, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const userId = req.user!.user_id;
     const record = await getCreditRecord(userId);
     if (!record?.bvn_encrypted) {
-      res.status(404).json({ success: false, message: 'No credit profile set up. Use /me/credit/setup first.' }); return;
+      res.status(404).json({ success: false, message: 'No credit profile set up yet.' }); return;
+    }
+
+    // Rate limit — one refresh per CREDIT_REFRESH_DAYS days
+    if (record.last_refreshed_at) {
+      const nextRefresh = new Date(new Date(record.last_refreshed_at).getTime() + CREDIT_REFRESH_DAYS * 86400_000);
+      if (new Date() < nextRefresh) {
+        const nextStr = nextRefresh.toLocaleDateString('en-CA', { day: 'numeric', month: 'long', year: 'numeric' });
+        res.status(429).json({
+          success: false,
+          message: `You can refresh your credit report once per ${CREDIT_REFRESH_DAYS} days. Next refresh available on ${nextStr}.`,
+          next_refresh_at: nextRefresh.toISOString(),
+        }); return;
+      }
     }
 
     const bvn = decryptBvn(record.bvn_encrypted);
-    let report: NigerianCreditReport;
+    let result: CrcFetchResult;
     try {
-      report = await fetchCrcReport(bvn);
+      result = await fetchCrcReport(bvn);
     } catch (apiErr: unknown) {
       const status = axios.isAxiosError(apiErr) ? apiErr.response?.status : 0;
       res.status(status === 404 || status === 400 ? 400 : 503).json({
@@ -989,10 +1064,12 @@ router.post('/credit/refresh', requireEmailVerified, async (req: Request, res: R
       }); return;
     }
 
-    await saveCreditRecord({ ...record, nigerian_report: report, updated_at: new Date().toISOString() });
-    auditLog('credit.refresh', req, { fico_score: report.fico_score });
+    const now = new Date().toISOString();
+    await saveCreditRecord({ ...record, nigerian_report: result.report, updated_at: now, last_refreshed_at: now });
+    auditLog('credit.refresh', req, { fico_score: result.report.fico_score });
 
-    res.json({ success: true, data: { nigerian_report: report, canadian_report: null, updated_at: new Date().toISOString() } });
+    const nextRefreshAt = new Date(new Date(now).getTime() + CREDIT_REFRESH_DAYS * 86400_000).toISOString();
+    res.json({ success: true, data: { nigerian_report: result.report, canadian_report: null, updated_at: now, next_refresh_at: nextRefreshAt } });
   } catch (err) { next(err); }
 });
 
