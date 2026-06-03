@@ -55,7 +55,17 @@ export const useAuthStore = create<AuthState>()(
         const rt = get().refreshToken;
         if (!rt) throw new Error('No refresh token');
         const { data } = await axios.post(`${API_BASE}/auth/refresh`, { refresh_token: rt });
-        set({ accessToken: data.data.access_token, refreshToken: data.data.refresh_token });
+        // Merge updated user fields (kyc_status, email_verified) from the fresh DB read
+        // the server does on every token refresh — no separate profile fetch needed.
+        const refreshedUser = data.data.user as Partial<AuthUser> | undefined;
+        const current = get().user;
+        set({
+          accessToken:  data.data.access_token,
+          refreshToken: data.data.refresh_token,
+          ...(refreshedUser && current
+            ? { user: { ...current, ...refreshedUser } }
+            : {}),
+        });
       },
     }),
     {

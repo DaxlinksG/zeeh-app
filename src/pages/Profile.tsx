@@ -1,10 +1,50 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import api from '../lib/api';
 import { useAuthStore } from '../store/authStore';
 import { toast } from '../components/Toast';
 import { type ThemePreference, getThemePreference, setTheme } from '../lib/theme';
 import { KycWizard } from '../components/KycWizard';
+
+/** Shown while KYC is under manual review. Polls every 15s and lets user check manually. */
+function PendingKycPanel({ onStatusChange }: { onStatusChange: (s: string) => void }) {
+  const [checking, setChecking] = useState(false);
+
+  const checkStatus = useCallback(async (silent = false) => {
+    if (!silent) setChecking(true);
+    try {
+      const { data } = await api.get('/me/profile');
+      const status: string = data?.data?.kyc_status ?? 'pending';
+      if (status !== 'pending') {
+        onStatusChange(status);
+        if (!silent) toast(status === 'approved' ? 'Identity verified! ✅' : 'KYC update received');
+      } else if (!silent) {
+        toast('Still under review — check back soon');
+      }
+    } catch { /* silent */ }
+    finally { if (!silent) setChecking(false); }
+  }, [onStatusChange]);
+
+  // Auto-poll every 15s while this panel is mounted
+  useEffect(() => {
+    const id = setInterval(() => checkStatus(true), 15_000);
+    return () => clearInterval(id);
+  }, [checkStatus]);
+
+  return (
+    <div className="card" style={{ textAlign: 'center', padding: '2.5rem 1.5rem' }}>
+      <div style={{ fontSize: '3.5rem', marginBottom: '.8rem' }}>⏳</div>
+      <div style={{ fontWeight: 700, fontSize: '1.1rem', marginBottom: '.4rem' }}>Under Review</div>
+      <div style={{ color: 'var(--muted)', fontSize: '.88rem', marginBottom: '1.2rem' }}>
+        Usually within a few hours. We'll notify you when done.
+      </div>
+      <button className="btn btn-sm" onClick={() => checkStatus(false)} disabled={checking}
+        style={{ margin: '0 auto' }}>
+        {checking ? <span className="spinner" /> : '↻ Check for update'}
+      </button>
+    </div>
+  );
+}
 
 type KycStatus = 'none' | 'pending' | 'approved' | 'rejected';
 type Tab = 'profile' | 'kyc' | 'security';
@@ -223,11 +263,7 @@ export default function Profile() {
             <div style={{ color: 'var(--muted)', fontSize: '.88rem' }}>All features are unlocked.</div>
           </div>
         ) : kycStatus === 'pending' ? (
-          <div className="card" style={{ textAlign: 'center', padding: '3rem' }}>
-            <div style={{ fontSize: '3.5rem', marginBottom: '.8rem' }}>⏳</div>
-            <div style={{ fontWeight: 700, fontSize: '1.1rem', marginBottom: '.4rem' }}>Under Review</div>
-            <div style={{ color: 'var(--muted)', fontSize: '.88rem' }}>Usually within a few hours. We'll notify you when done.</div>
-          </div>
+          <PendingKycPanel onStatusChange={(s) => updateUser({ kyc_status: s })} />
         ) : (
           <div className="card">
             <KycWizard
