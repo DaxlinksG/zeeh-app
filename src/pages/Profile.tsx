@@ -67,9 +67,11 @@ const THEME_OPTIONS: { value: ThemePreference; label: string; icon: string }[] =
 export default function Profile() {
   const { user, updateUser, logout } = useAuthStore();
   const navigate   = useNavigate();
-  const [loading,  setLoading]  = useState(false);
-  const [tab,      setTab]      = useState<Tab>('profile');
-  const [themePref, setThemePref] = useState<ThemePreference>(getThemePreference);
+  const [loading,        setLoading]        = useState(false);
+  const [tab,            setTab]            = useState<Tab>('profile');
+  const [themePref,      setThemePref]      = useState<ThemePreference>(getThemePreference);
+  // True until the initial profile fetch resolves — prevents showing stale KYC state
+  const [kycStatusReady, setKycStatusReady] = useState(false);
 
   // Profile form — name is display-only; only phone + country are editable
   const [profile, setProfile] = useState({
@@ -90,7 +92,8 @@ export default function Profile() {
       setProfile({ phone: u.phone ?? '', country: u.country ?? '' });
       updateUser({ kyc_status: u.kyc_status, email_verified: u.email_verified, has_pin: u.has_pin });
       setHasPin(u.has_pin ?? false);
-    }).catch(() => {});
+    }).catch(() => {})
+      .finally(() => setKycStatusReady(true)); // always unblock, even on error
   }, [updateUser]);
 
 
@@ -256,7 +259,14 @@ export default function Profile() {
         </div>
 
       ) : tab === 'kyc' ? (
-        kycStatus === 'approved' ? (
+        // Wait for the live profile fetch before rendering KYC state —
+        // prevents the stale store value ('none') flashing the KycWizard
+        // when the user is actually already pending or approved.
+        !kycStatusReady ? (
+          <div className="card" style={{ textAlign: 'center', padding: '3rem' }}>
+            <span className="spinner" />
+          </div>
+        ) : kycStatus === 'approved' ? (
           <div className="card" style={{ textAlign: 'center', padding: '3rem' }}>
             <div style={{ fontSize: '3.5rem', marginBottom: '.8rem' }}>✅</div>
             <div style={{ fontWeight: 700, fontSize: '1.1rem', marginBottom: '.4rem' }}>Identity Verified</div>
@@ -270,7 +280,7 @@ export default function Profile() {
               user={{ first_name: user?.first_name ?? '', last_name: user?.last_name ?? '', email: user?.email ?? '' }}
               onComplete={(status) => {
                 updateUser({ kyc_status: status });
-                toast(status === 'approved' ? 'Identity verified! ✅' : "KYC submitted — under review 👍");
+                toast(status === 'approved' ? 'Identity verified! ✅' : 'Verification submitted — under review');
                 setTab('profile');
               }}
               onError={msg => toast(msg, 'err')}

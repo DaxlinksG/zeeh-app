@@ -55,9 +55,15 @@ export function KycWizard({ onComplete, onError }: KycWizardProps) {
       setVerifyUrl(data.data.verify_url);
       setStep('widget');
     } catch (err: unknown) {
-      const msg =
-        (err as { response?: { data?: { message?: string } } })?.response?.data?.message
-        ?? 'Could not start verification. Please try again.';
+      const res  = (err as { response?: { data?: { message?: string; code?: string } } })?.response;
+      const code = res?.data?.code;
+
+      // Backend blocked the start because KYC is already in progress or done —
+      // tell the parent to show the correct panel instead of an error screen.
+      if (code === 'KYC_PENDING')  { onComplete('pending');  return; }
+      if (code === 'KYC_APPROVED') { onComplete('approved'); return; }
+
+      const msg = res?.data?.message ?? 'Could not start verification. Please try again.';
       setError(msg);
       onError?.(msg);
       setStep('error');
