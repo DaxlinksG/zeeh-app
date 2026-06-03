@@ -25,6 +25,10 @@ import {
   setTransactionPin, verifyTransactionPin, hasPinSet,
 } from '../lib/userStore';
 import {
+  getCreditRecord, saveCreditRecord, decryptBvn, encryptBvn,
+  type NigerianCreditReport, type CreditRecord,
+} from '../lib/creditStore';
+import {
   addBeneficiary, getBeneficiaries, isBeneficiary, removeBeneficiary,
 } from '../lib/beneficiaryStore';
 import {
@@ -849,6 +853,146 @@ router.post('/swap', requireEmailVerified, requirePin, requireKyc, userTransferL
         },
       },
     });
+  } catch (err) { next(err); }
+});
+
+// ── Credit Passport ────────────────────────────────────────────────────────
+//
+// Nigerian credit score (CRC FICO) + Canadian stub.
+// BVN is stored AES-256-GCM encrypted; never logged or returned to client.
+// Uses the same Zeeh Africa API key as KYC.
+//
+const ZEEH_BASE    = 'https://api.usezeeh.com/v1';
+const ZEEH_HEADERS = () => ({
+  'secret-key':   process.env.ZEEH_KYC_SECRET_KEY ?? '',
+  'Content-Type': 'application/json',
+});
+
+async function fetchCrcReport(bvn: string): Promise<NigerianCreditReport> {
+  // Fetch FICO score + full premium report in parallel
+  const [scoreRes, fullRes] = await Promise.all([
+    axios.post(`${ZEEH_BASE}/credit_reports/crc_score`,   { bvn, consent: true }, { headers: ZEEH_HEADERS(), timeout: 20000 }),
+    axios.post(`${ZEEH_BASE}/credit_reports/crc_premium`, { bvn, consent: true }, { headers: ZEEH_HEADERS(), timeout: 20000 }),
+  ]);
+
+  const s  = scoreRes.data?.data?.score ?? {};
+  const f  = fullRes.data?.data?.score  ?? {};
+
+  return {
+    fico_score:            Number(s.ficoScore?.score   ?? 0),
+    fico_rating:           String(s.ficoScore?.rating  ?? ''),
+    fico_reasons:          String(s.ficoScore?.reasons ?? ''),
+    total_loans:           Number(f.totalNoOfLoans             ?? s.totalNoOfLoans             ?? 0),
+    active_loans:          Number(f.totalNoOfActiveLoans       ?? s.totalNoOfActiveLoans       ?? 0),
+    closed_loans:          Number(f.totalNoOfClosedLoans       ?? s.totalNoOfClosedLoans       ?? 0),
+    delinquent_facilities: Number(f.totalNoOfDelinquentFacilities ?? s.totalNoOfDelinquentFacilities ?? 0),
+    total_borrowed:        Number(String(f.totalBorrowed  ?? 0).replace(/,/g, '')),
+    total_outstanding:     Number(String(f.totalOutstanding ?? 0).replace(/,/g, '')),
+    total_overdue:         Number(String(f.totalOverdue   ?? 0).replace(/,/g, '')),
+    max_overdue_days:      f.maxNoOfDays ?? null,
+    institutions:          Number(f.totalNoOfInstitutions ?? s.totalNoOfInstitutions ?? 0),
+    credit_enquiries:      Array.isArray(f.creditEnquiries) ? f.creditEnquiries : [],
+    loan_performance:      Array.isArray(f.loanPerformance) ? f.loanPerformance.map((l: Record<string, unknown>) => ({
+      loanProvider:       String(l.loanProvider ?? ''),
+      loanAmount:         String(l.loanAmount   ?? ''),
+      status:             String(l.status       ?? ''),
+      performanceStatus:  String(l.performanceStatus ?? ''),
+      overdueAmount:      String(l.overdueAmount     ?? '0'),
+      outstandingBalance: String(l.outstandingBalance ?? '0'),
+      loanCount:          Number(l.loanCount ?? 1),
+    })) : [],
+    last_reported_date:  String(f.lastReportedDate ?? s.lastReportedDate ?? ''),
+    report_order_number: String(f.crcReportOrderNumber ?? s.crcReportOrderNumber ?? ''),
+    fetched_at:          new Date().toISOString(),
+  };
+}
+
+// POST /me/credit/setup — first-time BVN entry; fetches + stores CRC report
+router.post('/credit/setup', requireEmailVerified, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { bvn } = req.body ?? {};
+    if (!bvn || !/^\d{11}$/.test(String(bvn))) {
+      res.status(400).json({ success: false, message: 'BVN must be exactly 11 digits' }); return;
+    }
+    if (!process.env.ZEEH_KYC_SECRET_KEY) {
+      res.status(500).json({ success: false, message: 'Credit service not configured' }); return;
+    }
+
+    const userId = req.user!.user_id;
+
+    // Fetch from CRC
+    let report: NigerianCreditReport;
+    try {
+      report = await fetchCrcReport(String(bvn));
+    } catch (apiErr: unknown) {
+      const status = axios.isAxiosError(apiErr) ? apiErr.response?.status : 0;
+      const msg = status === 404 || status === 400
+        ? 'BVN not found in credit bureau. Please check the number.'
+        : 'Credit bureau is temporarily unavailable. Please try again.';
+      res.status(status === 404 || status === 400 ? 400 : 503).json({ success: false, message: msg }); return;
+    }
+
+    const now = new Date().toISOString();
+    const existing = await getCreditRecord(userId);
+
+    const record: CreditRecord = {
+      user_id:         userId,
+      bvn_encrypted:   encryptBvn(String(bvn)),
+      nigerian_report: report,
+      canadian_report: null,
+      created_at:      existing?.created_at ?? now,
+      updated_at:      now,
+    };
+    await saveCreditRecord(record);
+
+    auditLog('credit.setup', req, { fico_score: report.fico_score });
+
+    res.json({ success: true, data: { nigerian_report: report, canadian_report: null } });
+  } catch (err) { next(err); }
+});
+
+// GET /me/credit — return cached credit report
+router.get('/credit', requireEmailVerified, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const record = await getCreditRecord(req.user!.user_id);
+    if (!record) {
+      res.json({ success: true, data: null }); return;   // no credit setup yet
+    }
+    res.json({
+      success: true,
+      data: {
+        nigerian_report: record.nigerian_report,
+        canadian_report: record.canadian_report,
+        updated_at:      record.updated_at,
+      },
+    });
+  } catch (err) { next(err); }
+});
+
+// POST /me/credit/refresh — re-fetch report using stored BVN
+router.post('/credit/refresh', requireEmailVerified, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const userId = req.user!.user_id;
+    const record = await getCreditRecord(userId);
+    if (!record?.bvn_encrypted) {
+      res.status(404).json({ success: false, message: 'No credit profile set up. Use /me/credit/setup first.' }); return;
+    }
+
+    const bvn = decryptBvn(record.bvn_encrypted);
+    let report: NigerianCreditReport;
+    try {
+      report = await fetchCrcReport(bvn);
+    } catch (apiErr: unknown) {
+      const status = axios.isAxiosError(apiErr) ? apiErr.response?.status : 0;
+      res.status(status === 404 || status === 400 ? 400 : 503).json({
+        success: false, message: 'Credit bureau temporarily unavailable. Please try again.',
+      }); return;
+    }
+
+    await saveCreditRecord({ ...record, nigerian_report: report, updated_at: new Date().toISOString() });
+    auditLog('credit.refresh', req, { fico_score: report.fico_score });
+
+    res.json({ success: true, data: { nigerian_report: report, canadian_report: null, updated_at: new Date().toISOString() } });
   } catch (err) { next(err); }
 });
 
