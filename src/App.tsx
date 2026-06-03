@@ -62,32 +62,46 @@ function AndroidBackHandler() {
 }
 
 /**
- * Inactivity logout — 5 minutes with no interaction.
+ * Inactivity logout — 10 minutes with no interaction.
  * Absolute session — 24 hours from login, regardless of activity.
  * Tracks: click, touchstart, keypress.
- * Also checks on Capacitor foreground resume so returning after a long pause logs out.
+ *
+ * Timer is PAUSED when the app goes to background (file picker, other app, etc.)
+ * so switching to file manager mid-KYC doesn't trigger logout. On resume we
+ * compare the wall-clock elapsed time against lastActiveAt instead.
  */
-const INACTIVITY_MS  = 5 * 60 * 1000;        // 5 minutes
+const INACTIVITY_MS  = 10 * 60 * 1000;       // 10 minutes
 const SESSION_MAX_MS = 24 * 60 * 60 * 1000;  // 24 hours absolute session
 
 function SessionGuard() {
   const { logout, user, loginAt, lastActiveAt, touchActive } = useAuthStore();
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Check if the user has been idle or the absolute session has expired.
-  // Runs on every mount (browser open, app launch, foreground resume).
   const checkExpiry = useCallback(() => {
     if (!user) return;
     const now = Date.now();
-    if (loginAt     && now - loginAt     > SESSION_MAX_MS) { logout(); return; }
-    if (lastActiveAt && now - lastActiveAt > INACTIVITY_MS) { logout(); return; }
+    if (loginAt      && now - loginAt      > SESSION_MAX_MS) { logout(); return; }
+    if (lastActiveAt && now - lastActiveAt > INACTIVITY_MS)  { logout(); return; }
   }, [user, loginAt, lastActiveAt, logout]);
 
   const resetTimer = useCallback(() => {
-    touchActive(); // persist last-active timestamp so kills/relaunches can check it
+    touchActive();
     if (timerRef.current) clearTimeout(timerRef.current);
     timerRef.current = setTimeout(logout, INACTIVITY_MS);
   }, [logout, touchActive]);
+
+  const pauseTimer = useCallback(() => {
+    if (timerRef.current) {
+      clearTimeout(timerRef.current);
+      timerRef.current = null;
+    }
+  }, []);
+
+  // Stable refs so the appStateChange listener never needs to re-register
+  const checkExpiryRef = useRef(checkExpiry);
+  const resetTimerRef  = useRef(resetTimer);
+  useEffect(() => { checkExpiryRef.current = checkExpiry; }, [checkExpiry]);
+  useEffect(() => { resetTimerRef.current  = resetTimer;  }, [resetTimer]);
 
   // On every mount: check if session/idle has already expired
   useEffect(() => {
@@ -106,15 +120,26 @@ function SessionGuard() {
     };
   }, [user, resetTimer]);
 
-  // Capacitor foreground resume — checks idle on every app foreground
+  // Capacitor foreground/background — pause timer on background, recheck on resume.
+  // This prevents the timer firing while the user is legitimately in another app
+  // (e.g. file manager during KYC document upload).
   useEffect(() => {
     if (!user) return;
+    let handle: { remove: () => void } | null = null;
     import('@capacitor/app').then(({ App: CapApp }) => {
       CapApp.addListener('appStateChange', ({ isActive }) => {
-        if (isActive) checkExpiry();
-      });
+        if (isActive) {
+          // Back in foreground: check wall-clock elapsed time, then restart timer
+          checkExpiryRef.current();
+          if (useAuthStore.getState().user) resetTimerRef.current();
+        } else {
+          // Going to background: pause the countdown — don't fire while user is away
+          pauseTimer();
+        }
+      }).then(h => { handle = h; });
     });
-  }, [user, checkExpiry]);
+    return () => { handle?.remove(); };
+  }, [user, pauseTimer]); // stable — refs handle the rest
 
   return null;
 }
