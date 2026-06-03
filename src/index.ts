@@ -408,12 +408,13 @@ app.post('/webhooks/kyc', async (req, res) => {
   }
 
   // Support both "event" and "type" field names
-  const eventType = String(event.event ?? event.type ?? '');
-  const data      = event.data as Record<string, unknown> | undefined;
-  // session_id can be top-level or inside data
-  const sessionId = String(event.session_id ?? data?.session_id ?? data?.id ?? '');
+  const eventType  = String(event.event ?? event.type ?? '');
+  const data       = event.data as Record<string, unknown> | undefined;
+  const sessionId  = String(event.session_id ?? data?.session_id ?? data?.id ?? '');
+  // external_id is now top-level in the confirmed payload format
+  const externalId = String(event.external_id ?? data?.external_id ?? '');
 
-  console.log(`📨  KYC WEBHOOK: ${eventType}  session=${sessionId}`);
+  console.log(`📨  KYC WEBHOOK: ${eventType}  session=${sessionId}  user=${externalId || '(unknown)'}`);
 
   // Ack non-actionable events (ping tests etc.)
   if (!['session.approved', 'session.rejected', 'session.manual_review'].includes(eventType)) {
@@ -421,13 +422,9 @@ app.post('/webhooks/kyc', async (req, res) => {
   }
 
   // ── Resolve user_id ────────────────────────────────────────────────────────
-  // external_id is NOT included in their webhook payload — we always fetch the
-  // session from kyc.zeehfi.ca to get the externalId we stored at session creation.
-  // Fallback: check data fields in case a future payload version adds it.
-  const payloadExternalId = String(
-    data?.external_id ?? data?.externalId ?? event.external_id ?? ''
-  );
-  let userId = payloadExternalId;
+  // Primary: external_id in payload (the user_id we stored at session creation).
+  // Fallback: fetch the session from kyc.zeehfi.ca if external_id is missing.
+  let userId = externalId;
 
   if (!userId && sessionId) {
     try {
@@ -436,14 +433,14 @@ app.post('/webhooks/kyc', async (req, res) => {
       const { data: session } = await axios.get(`${kycBase}/v1/sessions/${sessionId}`, {
         headers: { Authorization: `Bearer ${kycApiKey}` }, timeout: 8000,
       });
-      userId = String((session as Record<string, unknown>).external_id ?? (session as Record<string, unknown>).externalId ?? '');
+      userId = String((session as Record<string, unknown>).external_id ?? '');
     } catch (fetchErr) {
-      console.error('⚠️  KYC webhook: failed to fetch session for user_id resolution', fetchErr);
+      console.error('⚠️  KYC webhook: fallback session fetch failed', fetchErr);
     }
   }
 
   if (!userId) {
-    console.error('⚠️  KYC webhook: cannot resolve user_id for session', sessionId, '— acknowledging without action');
+    console.error('⚠️  KYC webhook: cannot resolve user_id for session', sessionId);
     res.status(200).json({ received: true }); return;
   }
 
