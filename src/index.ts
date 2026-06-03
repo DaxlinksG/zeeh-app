@@ -72,27 +72,20 @@ app.use(cors({
     : true,
   credentials: true,
 }));
-// Capture raw body for webhook signature verification BEFORE json parsing
-app.use((req, _res, next) => {
-  if (req.path === '/webhooks/receive' || req.path === '/webhooks/kyc') {
-    let raw = Buffer.alloc(0);
-    req.on('data', (chunk: Buffer) => { raw = Buffer.concat([raw, chunk]); });
-    req.on('end', () => {
-      (req as express.Request & { rawBody?: Buffer }).rawBody = raw;
-      try { (req as express.Request & { body: unknown }).body = JSON.parse(raw.toString('utf-8')); } catch { /* not JSON */ }
-      next();
-    });
-  } else {
-    next();
-  }
-});
-// Skip express.json() for webhook routes — the raw body middleware above already
-// consumed and parsed the stream. Running express.json() again causes
-// "stream is not readable" → 500 on every webhook call.
-app.use((req, res, next) => {
-  if (req.path === '/webhooks/receive' || req.path === '/webhooks/kyc') return next();
-  return express.json({ limit: '8mb' })(req, res, next);
-});
+// Single express.json() call for all routes.
+// For webhook routes, the `verify` callback captures the raw buffer for HMAC
+// verification BEFORE JSON parsing happens — this is the correct Express pattern.
+// The previous approach (custom raw-body listener + separate express.json()) caused
+// "stream is not readable" because the stream was consumed twice.
+app.use(express.json({
+  limit: '8mb',
+  verify: (req, _res, buf) => {
+    const path = (req as express.Request).path;
+    if (path === '/webhooks/receive' || path === '/webhooks/kyc') {
+      (req as express.Request & { rawBody?: Buffer }).rawBody = buf;
+    }
+  },
+}));
 app.use(requestId);    // attach x-request-id to every request
 app.use(httpLogger);   // log every HTTP request
 
