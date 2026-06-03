@@ -86,7 +86,13 @@ app.use((req, _res, next) => {
     next();
   }
 });
-app.use(express.json({ limit: '8mb' })); // KYC upload routes send base64 images (~200–600 KB each)
+// Skip express.json() for webhook routes — the raw body middleware above already
+// consumed and parsed the stream. Running express.json() again causes
+// "stream is not readable" → 500 on every webhook call.
+app.use((req, res, next) => {
+  if (req.path === '/webhooks/receive' || req.path === '/webhooks/kyc') return next();
+  return express.json({ limit: '8mb' })(req, res, next);
+});
 app.use(requestId);    // attach x-request-id to every request
 app.use(httpLogger);   // log every HTTP request
 
