@@ -45,6 +45,7 @@ interface CreditData {
   nigerian_report: NigerianReport | null;
   canadian_report: null;
   updated_at:      string;
+  next_refresh_at: string | null;
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────
@@ -111,17 +112,19 @@ export default function Credit() {
     api.get('/me/credit').then(r => setCredit(r.data.data)).catch(() => setCredit(null));
   }, []);
 
+  type ApiError = { response?: { data?: { message?: string } } };
+
   async function handleSetup(e: React.FormEvent) {
     e.preventDefault();
     if (!/^\d{11}$/.test(bvn)) { toast('BVN must be exactly 11 digits', 'err'); return; }
     setSetting(true);
     try {
       const { data } = await api.post('/me/credit/setup', { bvn });
-      setCredit({ nigerian_report: data.data.nigerian_report, canadian_report: null, updated_at: new Date().toISOString() });
+      setCredit({ nigerian_report: data.data.nigerian_report, canadian_report: null, updated_at: new Date().toISOString(), next_refresh_at: null });
       setBvn('');
-      toast('Credit passport ready ✅');
+      toast('Credit report connected');
     } catch (err: unknown) {
-      toast((err as { response?: { data?: { message?: string } } })?.response?.data?.message ?? 'Could not fetch credit report', 'err');
+      toast((err as ApiError)?.response?.data?.message ?? 'Could not fetch credit report', 'err');
     } finally { setSetting(false); }
   }
 
@@ -129,10 +132,10 @@ export default function Credit() {
     setRefreshing(true);
     try {
       const { data } = await api.post('/me/credit/refresh');
-      setCredit({ nigerian_report: data.data.nigerian_report, canadian_report: null, updated_at: data.data.updated_at });
-      toast('Credit report updated ✅');
+      setCredit({ nigerian_report: data.data.nigerian_report, canadian_report: null, updated_at: data.data.updated_at, next_refresh_at: data.data.next_refresh_at });
+      toast('Credit report updated');
     } catch (err: unknown) {
-      toast((err as { response?: { data?: { message?: string } } })?.response?.data?.message ?? 'Refresh failed', 'err');
+      toast((err as ApiError)?.response?.data?.message ?? 'Refresh failed', 'err');
     } finally { setRefreshing(false); }
   }
 
@@ -149,17 +152,17 @@ export default function Credit() {
       <div style={{ marginBottom: '1.5rem' }}>
         <h1 style={{ fontSize: '1.4rem', fontWeight: 700, marginBottom: '.4rem' }}>Credit Passport</h1>
         <p style={{ color: 'var(--muted)', fontSize: '.88rem', lineHeight: 1.7 }}>
-          See your Nigerian FICO credit score alongside your Canadian credit profile — all in one place.
-          Your credit history travels with you.
+          Your credit history, wherever you are. Connect your home-country credit record
+          and we'll display it alongside your local score — all in one place.
         </p>
       </div>
 
       <div className="card" style={{ marginBottom: '1rem' }}>
         <div style={{ display: 'flex', flexDirection: 'column', gap: '.7rem', marginBottom: '1.2rem' }}>
           {[
-            ['🇳🇬', 'Nigerian FICO score from CRC Credit Bureau'],
-            ['🇨🇦', 'Canadian credit profile (Equifax — coming soon)'],
-            ['📊', 'Tips to build your Canadian credit history'],
+            ['📊', 'Credit score from CRC Bureau (Nigeria)'],
+            ['🌍', 'More credit bureaus coming — Canada, UK, and beyond'],
+            ['💡', 'Tips to build credit in your current country'],
           ].map(([icon, text]) => (
             <div key={text} style={{ display: 'flex', alignItems: 'center', gap: '.7rem', fontSize: '.86rem', color: 'var(--muted)' }}>
               <span style={{ fontSize: '1.1rem', flexShrink: 0 }}>{icon}</span>
@@ -171,7 +174,7 @@ export default function Credit() {
         <form onSubmit={handleSetup} style={{ display: 'flex', flexDirection: 'column', gap: '.8rem' }}>
           <div>
             <label style={{ fontSize: '.82rem', color: 'var(--muted)', display: 'block', marginBottom: '.3rem' }}>
-              Your Nigerian BVN (11 digits)
+              BVN — Bank Verification Number (11 digits)
             </label>
             <input
               type="text" inputMode="numeric" maxLength={11}
@@ -183,10 +186,10 @@ export default function Credit() {
           </div>
           <p style={{ fontSize: '.75rem', color: 'var(--muted)', margin: 0 }}>
             Your BVN is encrypted at rest and only used to fetch your credit report.
-            It is never shared or displayed.
+            It is never shared or displayed. Must be your own BVN — we verify identity before connecting.
           </p>
           <button className="btn btn-primary" disabled={setting || bvn.length !== 11}>
-            {setting ? <span className="spinner" /> : 'Pull My Credit Report'}
+            {setting ? <span className="spinner" /> : 'Connect My Credit Report'}
           </button>
         </form>
       </div>
@@ -199,6 +202,12 @@ export default function Credit() {
   const colour = RATING_COLOUR[rating];
   const reasons = ng.fico_reasons?.split('. ').filter(Boolean) ?? [];
 
+  const nextRefresh    = credit.next_refresh_at ? new Date(credit.next_refresh_at) : null;
+  const refreshBlocked = nextRefresh !== null && new Date() < nextRefresh;
+  const nextRefreshStr = nextRefresh
+    ? nextRefresh.toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' })
+    : null;
+
   return (
     <div style={{ maxWidth: 600 }}>
 
@@ -207,20 +216,26 @@ export default function Credit() {
         <div>
           <h1 style={{ fontSize: '1.3rem', fontWeight: 700 }}>Credit Passport</h1>
           <div style={{ fontSize: '.75rem', color: 'var(--muted)' }}>
-            Last updated {new Date(credit.updated_at).toLocaleDateString('en-CA', { day: 'numeric', month: 'short', year: 'numeric' })}
+            Last updated {new Date(credit.updated_at).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' })}
           </div>
         </div>
-        <button className="btn btn-ghost btn-sm" onClick={handleRefresh} disabled={refreshing}>
-          {refreshing ? <span className="spinner" /> : '↻ Refresh'}
-        </button>
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '.2rem' }}>
+          <button className="btn btn-ghost btn-sm" onClick={handleRefresh} disabled={refreshing || refreshBlocked}
+            title={refreshBlocked ? `Next refresh: ${nextRefreshStr}` : undefined}>
+            {refreshing ? <span className="spinner" /> : '↻ Refresh'}
+          </button>
+          {refreshBlocked && nextRefreshStr && (
+            <span style={{ fontSize: '.65rem', color: 'var(--muted)' }}>Available {nextRefreshStr}</span>
+          )}
+        </div>
       </div>
 
-      {/* Nigerian panel */}
+      {/* Credit panel — CRC Bureau (Nigeria) */}
       <div className="card" style={{ marginBottom: '1rem', borderColor: `${colour}44` }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '.5rem', marginBottom: '1.2rem' }}>
           <span style={{ fontSize: '1.2rem' }}>🇳🇬</span>
-          <span style={{ fontWeight: 700, fontSize: '.95rem' }}>Nigerian Credit Score</span>
-          <span style={{ marginLeft: 'auto', fontSize: '.72rem', color: 'var(--muted)' }}>CRC Bureau · FICO</span>
+          <span style={{ fontWeight: 700, fontSize: '.95rem' }}>Credit Score</span>
+          <span style={{ marginLeft: 'auto', fontSize: '.72rem', color: 'var(--muted)' }}>CRC Bureau · Nigeria</span>
         </div>
 
         <div style={{ display: 'flex', alignItems: 'center', gap: '1.5rem', marginBottom: '1.2rem' }}>
@@ -285,24 +300,24 @@ export default function Credit() {
         )}
       </div>
 
-      {/* Canadian panel */}
+      {/* More bureaus coming panel */}
       <div className="card" style={{ borderStyle: 'dashed', opacity: 0.8 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '.5rem', marginBottom: '1rem' }}>
-          <span style={{ fontSize: '1.2rem' }}>🇨🇦</span>
-          <span style={{ fontWeight: 700, fontSize: '.95rem' }}>Canadian Credit Score</span>
+          <span style={{ fontSize: '1.2rem' }}>🌍</span>
+          <span style={{ fontWeight: 700, fontSize: '.95rem' }}>More Credit Sources</span>
           <span style={{ marginLeft: 'auto', fontSize: '.7rem', padding: '2px 8px', borderRadius: 20, background: 'rgba(245,158,11,.15)', color: 'var(--warn)', fontWeight: 600 }}>Coming Soon</span>
         </div>
         <p style={{ fontSize: '.84rem', color: 'var(--muted)', lineHeight: 1.7, margin: 0 }}>
-          We're integrating with Equifax Canada to show your Canadian credit score here.
-          Once live, you'll see both scores side by side — the full picture of your credit journey.
+          We're adding more credit bureaus — Canada (Equifax), UK, and beyond. Once live,
+          you'll see all your scores in one place no matter where you are.
         </p>
         <div style={{ marginTop: '1rem', display: 'flex', flexDirection: 'column', gap: '.5rem' }}>
-          <div style={{ fontSize: '.78rem', fontWeight: 600, color: 'var(--muted)' }}>Tips to start building Canadian credit:</div>
+          <div style={{ fontSize: '.78rem', fontWeight: 600, color: 'var(--muted)' }}>Tips to build credit in a new country:</div>
           {[
-            '🏦 Open a Canadian chequing account (you may already have one)',
+            '🏦 Open a local bank account as soon as you arrive',
             '💳 Apply for a secured credit card — no history required',
             '📱 Register a phone plan in your name',
-            '🏠 Ask your landlord to report rent to the bureau',
+            '🏠 Ask your landlord to report rent to the local bureau',
           ].map(tip => (
             <div key={tip} style={{ fontSize: '.78rem', color: 'var(--muted)' }}>{tip}</div>
           ))}
@@ -311,9 +326,8 @@ export default function Credit() {
 
       {/* Disclaimer */}
       <p style={{ fontSize: '.7rem', color: 'var(--muted)', marginTop: '1rem', lineHeight: 1.6 }}>
-        Nigerian score sourced from CRC Credit Bureau via your BVN. Canadian score integration
-        coming soon via Equifax Canada. Data refreshed on demand only — your BVN is encrypted
-        at rest and never shared.
+        Score sourced from CRC Credit Bureau via your BVN. Data refreshed on demand only —
+        your ID is encrypted at rest and never shared. Refreshes are limited to once every 30 days.
       </p>
     </div>
   );
