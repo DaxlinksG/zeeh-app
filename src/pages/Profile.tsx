@@ -31,12 +31,10 @@ export default function Profile() {
   const [tab,      setTab]      = useState<Tab>('profile');
   const [themePref, setThemePref] = useState<ThemePreference>(getThemePreference);
 
-  // Profile form
+  // Profile form — name is display-only; only phone + country are editable
   const [profile, setProfile] = useState({
-    first_name: user?.first_name ?? '',
-    last_name:  user?.last_name  ?? '',
-    phone:      '',
-    country:    '',
+    phone:   '',
+    country: '',
   });
 
   // Security / PIN
@@ -49,7 +47,7 @@ export default function Profile() {
   useEffect(() => {
     api.get('/me/profile').then(r => {
       const u = r.data.data;
-      setProfile({ first_name: u.first_name, last_name: u.last_name, phone: u.phone ?? '', country: u.country ?? '' });
+      setProfile({ phone: u.phone ?? '', country: u.country ?? '' });
       updateUser({ kyc_status: u.kyc_status, email_verified: u.email_verified, has_pin: u.has_pin });
       setHasPin(u.has_pin ?? false);
     }).catch(() => {});
@@ -66,7 +64,6 @@ export default function Profile() {
     setLoading(true);
     try {
       await api.put('/me/profile', profile);
-      updateUser({ first_name: profile.first_name, last_name: profile.last_name });
       toast('Profile updated');
     } catch { toast('Update failed', 'err'); }
     finally { setLoading(false); }
@@ -173,38 +170,50 @@ export default function Profile() {
       </div>
 
       {tab === 'profile' ? (
-        <form className="card" onSubmit={saveProfile}>
-          <div className="grid-2">
-            <div className="form-group">
-              <label>First Name</label>
-              <input value={profile.first_name} onChange={e => setProfile(p => ({ ...p, first_name: e.target.value }))} />
+        <div>
+          {/* Name — read-only */}
+          <div className="card" style={{ marginBottom: '1rem' }}>
+            <div className="grid-2">
+              <div className="form-group">
+                <label>First Name</label>
+                <input value={user?.first_name ?? ''} disabled style={{ opacity: .6 }} />
+              </div>
+              <div className="form-group">
+                <label>Last Name</label>
+                <input value={user?.last_name ?? ''} disabled style={{ opacity: .6 }} />
+              </div>
             </div>
-            <div className="form-group">
-              <label>Last Name</label>
-              <input value={profile.last_name} onChange={e => setProfile(p => ({ ...p, last_name: e.target.value }))} />
-            </div>
+            <p style={{ fontSize: '.75rem', color: 'var(--muted)', margin: 0 }}>
+              Name cannot be changed self-service. Contact{' '}
+              <a href="mailto:support@zeehfi.ca" style={{ color: 'var(--accent)' }}>support@zeehfi.ca</a>{' '}
+              if your name is incorrect.
+            </p>
           </div>
-          <div className="form-group">
-            <label>Email</label>
-            <input value={user?.email ?? ''} disabled style={{ opacity: .5 }} />
-          </div>
-          <div className="grid-2">
+
+          {/* Editable fields */}
+          <form className="card" onSubmit={saveProfile}>
             <div className="form-group">
-              <label>Phone</label>
-              <input value={profile.phone} onChange={e => setProfile(p => ({ ...p, phone: e.target.value }))} placeholder="+1 416..." />
+              <label>Email</label>
+              <input value={user?.email ?? ''} disabled style={{ opacity: .5 }} />
             </div>
-            <div className="form-group">
-              <label>Country</label>
-              <select value={profile.country} onChange={e => setProfile(p => ({ ...p, country: e.target.value }))}>
-                <option value="">Select…</option>
-                {COUNTRIES.map(c => <option key={c}>{c}</option>)}
-              </select>
+            <div className="grid-2">
+              <div className="form-group">
+                <label>Phone</label>
+                <input value={profile.phone} onChange={e => setProfile(p => ({ ...p, phone: e.target.value }))} placeholder="+1 416..." />
+              </div>
+              <div className="form-group">
+                <label>Country</label>
+                <select value={profile.country} onChange={e => setProfile(p => ({ ...p, country: e.target.value }))}>
+                  <option value="">Select…</option>
+                  {COUNTRIES.map(c => <option key={c}>{c}</option>)}
+                </select>
+              </div>
             </div>
-          </div>
-          <button className="btn btn-primary btn-full" disabled={loading}>
-            {loading ? <span className="spinner" /> : 'Save Changes'}
-          </button>
-        </form>
+            <button className="btn btn-primary btn-full" disabled={loading}>
+              {loading ? <span className="spinner" /> : 'Save Changes'}
+            </button>
+          </form>
+        </div>
 
       ) : tab === 'kyc' ? (
         kycStatus === 'approved' ? (
