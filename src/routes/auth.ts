@@ -161,7 +161,23 @@ router.post('/refresh', async (req: Request, res: Response, next: NextFunction) 
       signRefreshToken(user.user_id),
     ]);
 
-    res.json({ success: true, data: { access_token: accessToken, refresh_token: refreshToken } });
+    // Return updated user object so the client can sync kyc_status / email_verified
+    // without requiring a full logout/login cycle.
+    res.json({
+      success: true,
+      data: {
+        access_token:  accessToken,
+        refresh_token: refreshToken,
+        user: {
+          user_id:        user.user_id,
+          email:          user.email,
+          first_name:     user.first_name,
+          last_name:      user.last_name,
+          kyc_status:     user.kyc_status,
+          email_verified: user.email_verified ?? false,
+        },
+      },
+    });
   } catch (err: unknown) {
     if ((err as Error).message === 'TOKEN_REVOKED' || (err as { name?: string }).name === 'JsonWebTokenError') {
       res.status(401).json({ success: false, message: 'Invalid or expired refresh token' });

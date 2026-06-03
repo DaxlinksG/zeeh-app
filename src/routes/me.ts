@@ -134,18 +134,22 @@ router.put('/profile', async (req: Request, res: Response, next: NextFunction) =
 //
 router.post('/kyc/start', requireEmailVerified, async (req: Request, res: Response, next: NextFunction) => {
   try {
-    if (req.user!.kyc_status === 'approved') {
-      res.status(400).json({ success: false, message: 'KYC already approved' }); return;
-    }
-
     const kycApiKey = process.env.KYC_API_KEY;
     const kycBase   = process.env.KYC_SERVICE_URL ?? 'https://kyc.zeehfi.ca';
     if (!kycApiKey) {
       res.status(500).json({ success: false, message: 'KYC service not configured' }); return;
     }
 
+    // Always read from DB — the JWT kyc_status can be stale if a webhook fired since login
     const u = await getUserById(req.user!.user_id);
     if (!u) { res.status(404).json({ success: false, message: 'User not found' }); return; }
+
+    if (u.kyc_status === 'approved') {
+      res.status(400).json({ success: false, message: 'KYC already approved', code: 'KYC_APPROVED' }); return;
+    }
+    if (u.kyc_status === 'pending') {
+      res.status(400).json({ success: false, message: 'Your verification is already under review. Please wait for the result.', code: 'KYC_PENDING' }); return;
+    }
 
     // After KYC is complete, redirect the user back to the app's profile page.
     const appOrigin = process.env.APP_ORIGIN ?? 'https://app.zeehfi.ca';
