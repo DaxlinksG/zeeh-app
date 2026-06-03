@@ -31,6 +31,9 @@ export default function Dashboard() {
   const { user, updateUser, accessToken } = useAuthStore();
   const [balances,      setBalances]      = useState<Balance[]>([]);
   const [loading,       setLoading]       = useState(true);
+  // Don't render KYC action card until we have a confirmed-fresh status from the server.
+  // Prevents the stale localStorage value ('none') showing the wrong card before the fetch.
+  const [kycReady,      setKycReady]      = useState(false);
   // Email verify modal (inline — no separate component needed)
   const [showOtpModal,  setShowOtpModal]  = useState(false);
   const [otp,           setOtp]           = useState('');
@@ -39,20 +42,28 @@ export default function Dashboard() {
   const navigate = useNavigate();
 
   const loadData = useCallback(async () => {
-    try {
-      const [balRes, profileRes] = await Promise.all([
-        api.get('/me/balance'),
-        api.get('/me/profile'),
-      ]);
-      setBalances(balRes.data.data?.balances ?? []);
-      const u = profileRes.data.data;
+    // Use allSettled so a balance failure can't prevent the profile (kyc_status) from
+    // updating, and vice versa — they are independent.
+    const [balResult, profileResult] = await Promise.allSettled([
+      api.get('/me/balance'),
+      api.get('/me/profile'),
+    ]);
+
+    if (balResult.status === 'fulfilled') {
+      setBalances(balResult.value.data.data?.balances ?? []);
+    } else {
+      toast('Could not load balances', 'err');
+    }
+
+    if (profileResult.status === 'fulfilled') {
+      const u = profileResult.value.data.data;
       updateUser({ kyc_status: u.kyc_status, email_verified: u.email_verified, has_pin: u.has_pin });
-    } catch {
-      try {
-        const r = await api.get('/me/balance');
-        setBalances(r.data.data?.balances ?? []);
-      } catch { toast('Failed to load balances', 'err'); }
-    } finally { setLoading(false); }
+    }
+
+    // Mark kyc status as confirmed from server regardless of outcome —
+    // if profile failed we fall back to the store value, which is acceptable.
+    setKycReady(true);
+    setLoading(false);
   }, [updateUser]);
 
   useEffect(() => { loadData(); }, [loadData]);
@@ -84,7 +95,8 @@ export default function Dashboard() {
     } finally { setOtpResending(false); }
   }
 
-  // Build action items list — shown at top of dashboard
+  // Build action items list — shown at top of dashboard.
+  // KYC items only rendered after kycReady (server has confirmed the live status).
   type ActionItem = { key: string; icon: string; title: string; desc: string; cta?: string; onPress?: () => void };
   const actionItems: ActionItem[] = [
     ...(user?.email_verified === false ? [{
@@ -92,12 +104,12 @@ export default function Dashboard() {
       desc: 'Required before making any transaction',
       cta: 'Verify', onPress: () => { setOtp(''); setShowOtpModal(true); },
     }] : []),
-    ...(user?.kyc_status === 'none' ? [{
+    ...(kycReady && user?.kyc_status === 'none' ? [{
       key: 'kyc', icon: '🪪', title: 'Complete KYC',
       desc: 'Unlock bank transfers & currency exchange',
       cta: 'Start', onPress: () => navigate('/profile'),
     }] : []),
-    ...(user?.kyc_status === 'pending' ? [{
+    ...(kycReady && user?.kyc_status === 'pending' ? [{
       key: 'kyc-pending', icon: '⏳', title: 'KYC under review',
       desc: 'Usually 24 hours. Bank transfers enabled once approved.',
     }] : []),
