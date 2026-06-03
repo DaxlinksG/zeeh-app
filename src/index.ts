@@ -358,41 +358,43 @@ app.post('/webhooks/receive', async (req, res) => {
 
 // ── KYC webhook receiver — kyc.zeehfi.ca calls this when a session completes ──
 //
-// Signature format:  X-KYC-Signature: t=<unix_ts>,v1=<hmac_sha256>
-// HMAC input:        "<timestamp>.<raw_body>"
-// Events handled:    session.approved | session.rejected | session.manual_review
+// Payload:  { "event": "session.approved", "session_id": "ses_...", "timestamp": <unix>, "data": { ... } }
+// Header:   X-Webhook-Signature: sha256=<hmac-sha256-of-raw-body>
+// HMAC key: KYC_WEBHOOK_SECRET (shared secret from webhook registration)
+// Events:   session.approved | session.rejected | session.manual_review
 //
 app.post('/webhooks/kyc', async (req, res) => {
-  const rawBody       = (req as express.Request & { rawBody?: Buffer }).rawBody;
+  const rawBody          = (req as express.Request & { rawBody?: Buffer }).rawBody;
   const kycWebhookSecret = process.env.KYC_WEBHOOK_SECRET;
-  const sigHeader     = req.headers['x-kyc-signature'] as string | undefined;
 
   // ── Signature verification ─────────────────────────────────────────────────
+  // Header format: "X-Webhook-Signature: sha256=<hex-hmac>"
+  // HMAC is computed over the raw request body only (no timestamp prefix).
   if (kycWebhookSecret) {
+    const sigHeader = (req.headers['x-webhook-signature'] ?? '') as string;
     if (!sigHeader || !rawBody) {
       console.warn('⚠️  KYC webhook missing signature or body — rejected');
       res.status(401).json({ error: 'Missing signature' }); return;
     }
-    const { createHmac, timingSafeEqual } = await import('crypto');
-    // Parse "t=1234567890,v1=abc123..."
-    const parts = Object.fromEntries(sigHeader.split(',').map(p => { const i = p.indexOf('='); return [p.slice(0, i), p.slice(i + 1)]; }));
-    const ts = parts['t'];
-    const v1 = parts['v1'];
-    if (!ts || !v1) {
-      res.status(401).json({ error: 'Malformed signature header' }); return;
+    if (!sigHeader.startsWith('sha256=')) {
+      console.warn('⚠️  KYC webhook unexpected signature format:', sigHeader.slice(0, 20));
+      res.status(401).json({ error: 'Unsupported signature format' }); return;
     }
-    const payload  = `${ts}.${rawBody.toString('utf-8')}`;
-    const expected = createHmac('sha256', kycWebhookSecret).update(payload).digest('hex');
+    const { createHmac, timingSafeEqual } = await import('crypto');
+    const received = sigHeader.slice(7); // strip "sha256="
+    const expected = createHmac('sha256', kycWebhookSecret).update(rawBody).digest('hex');
     try {
-      if (!timingSafeEqual(Buffer.from(expected, 'hex'), Buffer.from(v1, 'hex'))) {
-        console.warn('⚠️  KYC webhook signature mismatch — rejected');
+      if (!timingSafeEqual(Buffer.from(expected, 'hex'), Buffer.from(received, 'hex'))) {
+        console.warn('⚠️  KYC webhook signature mismatch');
         res.status(401).json({ error: 'Invalid signature' }); return;
       }
     } catch {
-      res.status(401).json({ error: 'Invalid signature format' }); return;
+      // timingSafeEqual throws if buffers differ in length — treat as invalid
+      console.warn('⚠️  KYC webhook signature length mismatch');
+      res.status(401).json({ error: 'Invalid signature' }); return;
     }
   } else {
-    console.warn('⚠️  KYC_WEBHOOK_SECRET not set — skipping KYC webhook signature check');
+    console.warn('⚠️  KYC_WEBHOOK_SECRET not set — skipping signature check');
   }
 
   // ── Parse body ─────────────────────────────────────────────────────────────
@@ -405,24 +407,28 @@ app.post('/webhooks/kyc', async (req, res) => {
     res.status(400).json({ error: 'Invalid JSON' }); return;
   }
 
-  const eventType = String(event.type ?? event.event ?? '');
+  // Support both "event" and "type" field names
+  const eventType = String(event.event ?? event.type ?? '');
   const data      = event.data as Record<string, unknown> | undefined;
-  const sessionId = String(data?.session_id ?? data?.id ?? event.session_id ?? '');
+  // session_id can be top-level or inside data
+  const sessionId = String(event.session_id ?? data?.session_id ?? data?.id ?? '');
 
-  // externalId is the user_id we passed when creating the session
-  const externalId = String(data?.external_id ?? data?.externalId ?? event.external_id ?? '');
+  console.log(`📨  KYC WEBHOOK: ${eventType}  session=${sessionId}`);
 
-  console.log(`📨  KYC WEBHOOK: ${eventType}  session=${sessionId}  user=${externalId || '(unknown)'}`);
-
-  // Ack non-actionable events (e.g. ping test)
+  // Ack non-actionable events (ping tests etc.)
   if (!['session.approved', 'session.rejected', 'session.manual_review'].includes(eventType)) {
     res.status(200).json({ received: true }); return;
   }
 
   // ── Resolve user_id ────────────────────────────────────────────────────────
-  // Primary:  externalId in the webhook payload
-  // Fallback: fetch the session from kyc.zeehfi.ca and read externalId from there
-  let userId = externalId;
+  // external_id is NOT included in their webhook payload — we always fetch the
+  // session from kyc.zeehfi.ca to get the externalId we stored at session creation.
+  // Fallback: check data fields in case a future payload version adds it.
+  const payloadExternalId = String(
+    data?.external_id ?? data?.externalId ?? event.external_id ?? ''
+  );
+  let userId = payloadExternalId;
+
   if (!userId && sessionId) {
     try {
       const kycBase   = process.env.KYC_SERVICE_URL ?? 'https://kyc.zeehfi.ca';
@@ -430,14 +436,14 @@ app.post('/webhooks/kyc', async (req, res) => {
       const { data: session } = await axios.get(`${kycBase}/v1/sessions/${sessionId}`, {
         headers: { Authorization: `Bearer ${kycApiKey}` }, timeout: 8000,
       });
-      userId = String((session as Record<string, unknown>).external_id ?? '');
+      userId = String((session as Record<string, unknown>).external_id ?? (session as Record<string, unknown>).externalId ?? '');
     } catch (fetchErr) {
-      console.error('⚠️  KYC webhook: failed to fetch session for externalId resolution', fetchErr);
+      console.error('⚠️  KYC webhook: failed to fetch session for user_id resolution', fetchErr);
     }
   }
 
   if (!userId) {
-    console.error('⚠️  KYC webhook: cannot resolve user_id — acknowledging without action');
+    console.error('⚠️  KYC webhook: cannot resolve user_id for session', sessionId, '— acknowledging without action');
     res.status(200).json({ received: true }); return;
   }
 
