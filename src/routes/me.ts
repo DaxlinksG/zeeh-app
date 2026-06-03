@@ -155,22 +155,29 @@ router.post('/kyc/start', requireEmailVerified, async (req: Request, res: Respon
     const appOrigin = process.env.APP_ORIGIN ?? 'https://app.zeehfi.ca';
     const redirectUrl = `${appOrigin}/profile?kyc_done=1`;
 
-    // Pass the user's ID as externalId so the webhook can resolve it back to this user.
+    // Pass the user's ID in both naming conventions — their API docs say externalId
+    // (camelCase) but their system stores it as external_id (snake_case). Send both
+    // so it maps regardless of which field they actually read server-side.
+    const sessionBody = {
+      externalId:  u.user_id,   // camelCase — per their API docs
+      external_id: u.user_id,   // snake_case — what their DB actually stores
+      metadata:    { email: u.email, first_name: u.first_name, last_name: u.last_name },
+      redirect_url: redirectUrl,
+    };
+    console.log(`🪪  KYC session create — user=${u.user_id} body=${JSON.stringify(sessionBody)}`);
+
     const { data: session } = await axios.post(
       `${kycBase}/v1/sessions`,
-      {
-        externalId:   u.user_id,
-        metadata:     { email: u.email, first_name: u.first_name, last_name: u.last_name },
-        redirect_url: redirectUrl,
-      },
+      sessionBody,
       {
         headers: { Authorization: `Bearer ${kycApiKey}`, 'Content-Type': 'application/json' },
         timeout: 10000,
       },
     );
+    console.log(`🪪  KYC session response — ${JSON.stringify(session)}`);
 
     // Build the full verify URL — user navigates here to complete KYC
-    const verifyUrl = `${kycBase}/verify?session_token=${session.session_token}`;
+    const verifyUrl = `${kycBase}/verify?session_token=${session.session_token ?? session.data?.session_token}`;
 
     auditLog('kyc.session_started', req, { session_id: session.session_id });
 
