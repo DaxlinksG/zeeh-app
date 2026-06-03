@@ -28,6 +28,7 @@ import {
   getCreditRecord, saveCreditRecord, decryptBvn, encryptBvn,
   type NigerianCreditReport, type CreditRecord,
 } from '../lib/creditStore';
+import { storeKycSession } from '../lib/kycSessionStore';
 import {
   addBeneficiary, getBeneficiaries, isBeneficiary, removeBeneficiary,
 } from '../lib/beneficiaryStore';
@@ -179,12 +180,21 @@ router.post('/kyc/start', requireEmailVerified, async (req: Request, res: Respon
     // Build the full verify URL — user navigates here to complete KYC
     const verifyUrl = `${kycBase}/verify?session_token=${session.session_token ?? session.data?.session_token}`;
 
-    auditLog('kyc.session_started', req, { session_id: session.session_id });
+    // Store session_id → user_id in our own DB so the webhook handler can
+    // resolve the user regardless of whether the KYC provider passes external_id.
+    const resolvedSessionId = session.session_id ?? session.data?.session_id;
+    if (resolvedSessionId) {
+      storeKycSession(resolvedSessionId, u.user_id).catch(e =>
+        console.error('⚠️  Failed to store KYC session mapping:', e),
+      );
+    }
+
+    auditLog('kyc.session_started', req, { session_id: resolvedSessionId });
 
     res.json({
       success: true,
       data: {
-        session_id: session.session_id,
+        session_id: resolvedSessionId,
         verify_url: verifyUrl,
         expires_at: session.expires_at,
       },

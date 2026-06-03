@@ -28,6 +28,7 @@ import { warmWalletCache } from './lib/walletCache';
 import { updateKycStatus, getUserById } from './lib/userStore';
 import type { KycStatus } from './lib/userStore';
 import { sendKycSubmitted, sendAdminKycAlert } from './lib/mailer';
+import { getUserIdByKycSession } from './lib/kycSessionStore';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, PutCommand as DdbPutCommand } from '@aws-sdk/lib-dynamodb';
 
@@ -421,21 +422,43 @@ app.post('/webhooks/kyc', async (req, res) => {
     res.status(200).json({ received: true }); return;
   }
 
-  // ── Resolve user_id ────────────────────────────────────────────────────────
-  // Primary: external_id in payload (the user_id we stored at session creation).
-  // Fallback: fetch the session from kyc.zeehfi.ca if external_id is missing.
-  let userId = externalId;
+  // ── Resolve user_id — three independent paths ─────────────────────────────
+  //
+  // 1. Our own session table (most reliable — stored by us at session creation,
+  //    completely independent of the KYC provider's external_id behaviour).
+  // 2. external_id from the webhook payload (works once provider fixes their end).
+  // 3. Fetch session from kyc.zeehfi.ca (last resort — may also return null).
+  //
+  let userId = '';
 
+  // Path 1 — our own mapping table
+  if (!userId && sessionId) {
+    try {
+      userId = await getUserIdByKycSession(sessionId) ?? '';
+      if (userId) console.log(`✅  KYC webhook: resolved user via session table — ${userId}`);
+    } catch (e) {
+      console.error('⚠️  KYC webhook: session table lookup failed', e);
+    }
+  }
+
+  // Path 2 — external_id from payload
+  if (!userId && externalId) {
+    userId = externalId;
+    console.log(`✅  KYC webhook: resolved user via external_id — ${userId}`);
+  }
+
+  // Path 3 — fetch from KYC provider as last resort
   if (!userId && sessionId) {
     try {
       const kycBase   = process.env.KYC_SERVICE_URL ?? 'https://kyc.zeehfi.ca';
       const kycApiKey = process.env.KYC_API_KEY!;
-      const { data: session } = await axios.get(`${kycBase}/v1/sessions/${sessionId}`, {
+      const { data: kycSession } = await axios.get(`${kycBase}/v1/sessions/${sessionId}`, {
         headers: { Authorization: `Bearer ${kycApiKey}` }, timeout: 8000,
       });
-      userId = String((session as Record<string, unknown>).external_id ?? '');
+      userId = String((kycSession as Record<string, unknown>).external_id ?? '');
+      if (userId) console.log(`✅  KYC webhook: resolved user via provider session fetch — ${userId}`);
     } catch (fetchErr) {
-      console.error('⚠️  KYC webhook: fallback session fetch failed', fetchErr);
+      console.error('⚠️  KYC webhook: all resolution paths failed for session', sessionId, fetchErr);
     }
   }
 
