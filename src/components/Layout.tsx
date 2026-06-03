@@ -6,12 +6,13 @@ const navItems = [
   { to: '/dashboard',    label: 'Home',     icon: '⊞' },
   { to: '/exchange',     label: 'Exchange', icon: '⇄' },
   { to: '/pay',          label: 'Pay',      icon: '🏦' },
-  { to: '/send',         label: 'Send',     icon: '↗' },
+  { to: '/credit',       label: 'Credit',   icon: '📊' },
   { to: '/transactions', label: 'History',  icon: '≡' },
 ];
 
 // These appear in the desktop sidebar but are not crammed into the 5-item mobile bottom nav
 const sidebarExtra = [
+  { to: '/send',          label: 'Send',          icon: '↗' },
   { to: '/beneficiaries', label: 'Beneficiaries', icon: '👥' },
 ];
 
