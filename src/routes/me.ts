@@ -106,10 +106,8 @@ router.get('/profile', async (req: Request, res: Response, next: NextFunction) =
 });
 
 const updateProfileSchema = z.object({
-  first_name: z.string().min(1).max(60).optional(),
-  last_name:  z.string().min(1).max(60).optional(),
-  phone:      z.string().min(7).max(20).optional(),
-  country:    z.string().min(2).max(60).optional(),
+  phone:   z.string().min(7).max(20).optional(),
+  country: z.string().min(2).max(60).optional(),
 });
 
 router.put('/profile', async (req: Request, res: Response, next: NextFunction) => {
@@ -118,19 +116,6 @@ router.put('/profile', async (req: Request, res: Response, next: NextFunction) =
     if (!parsed.success) {
       res.status(400).json({ success: false, errors: parsed.error.flatten() }); return;
     }
-
-    // SECURITY: Block name changes once KYC has been initiated.
-    // If allowed, a user could change their name to match a stolen identity,
-    // re-submit KYC, and pass verification as someone else.
-    const kycActive = ['pending', 'approved'].includes(req.user!.kyc_status);
-    if (kycActive && (parsed.data.first_name || parsed.data.last_name)) {
-      res.status(400).json({
-        success: false,
-        message: 'Name cannot be changed after KYC verification has been submitted. Contact support if your name is incorrect.',
-        code: 'NAME_LOCKED_POST_KYC',
-      }); return;
-    }
-
     await updateUserProfile(req.user!.user_id, parsed.data);
     res.json({ success: true, message: 'Profile updated' });
   } catch (err) { next(err); }
