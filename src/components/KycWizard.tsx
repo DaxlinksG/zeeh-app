@@ -8,7 +8,9 @@
  *  4. We poll GET /me/profile every 5s to detect completion via webhook
  *  5. On status change → notify parent, iframe closes
  *
- * CORS and X-Frame-Options are open on kyc.zeehfi.ca, so embedding works.
+ * Edge cases handled:
+ *  - User closes widget (X): check status first; if pending/approved → onComplete
+ *  - startKyc blocked with KYC_PENDING/KYC_APPROVED: tell parent the real status
  */
 
 import { useState, useEffect, useRef } from 'react';
@@ -20,7 +22,7 @@ export interface KycWizardProps {
   onError?: (msg: string) => void;
 }
 
-type Step = 'intro' | 'loading' | 'widget' | 'error';
+type Step = 'intro' | 'loading' | 'widget' | 'closing' | 'error';
 
 export function KycWizard({ onComplete, onError }: KycWizardProps) {
   const [step,      setStep]      = useState<Step>('intro');
@@ -70,6 +72,22 @@ export function KycWizard({ onComplete, onError }: KycWizardProps) {
     }
   }
 
+  // Called when user closes the iframe. Check live status first — if the
+  // webhook already fired while the widget was open, go to the right state
+  // instead of dropping back to the intro screen.
+  async function handleClose() {
+    setStep('closing');
+    try {
+      const { data } = await api.get('/me/profile');
+      const status: string = data?.data?.kyc_status ?? 'none';
+      if (status === 'approved' || status === 'pending') {
+        onComplete(status as 'approved' | 'pending');
+        return;
+      }
+    } catch { /* ignore — fall through to intro */ }
+    setStep('intro');
+  }
+
   if (step === 'intro') return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '1.2rem' }}>
       <div style={{ fontWeight: 700, fontSize: '1.1rem' }}>Identity Verification</div>
@@ -95,10 +113,12 @@ export function KycWizard({ onComplete, onError }: KycWizardProps) {
     </div>
   );
 
-  if (step === 'loading') return (
+  if (step === 'loading' || step === 'closing') return (
     <div style={{ textAlign: 'center', padding: '2rem 0', display: 'flex', flexDirection: 'column', gap: '1rem', alignItems: 'center', color: 'var(--muted)' }}>
       <span className="spinner" />
-      <span style={{ fontSize: '.88rem' }}>Starting verification…</span>
+      <span style={{ fontSize: '.88rem' }}>
+        {step === 'closing' ? 'Checking status…' : 'Starting verification…'}
+      </span>
     </div>
   );
 
@@ -128,7 +148,7 @@ export function KycWizard({ onComplete, onError }: KycWizardProps) {
           Identity Verification
         </span>
         <button
-          onClick={() => setStep('intro')}
+          onClick={handleClose}
           style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--muted, #888)', fontSize: '1.3rem', lineHeight: 1, padding: '4px 8px' }}
           aria-label="Cancel verification"
         >

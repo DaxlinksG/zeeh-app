@@ -1,5 +1,5 @@
-import { useEffect, useState, useCallback } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useEffect, useState, useCallback, useRef } from 'react';
+import { useNavigate, useLocation } from 'react-router-dom';
 import api from '../lib/api';
 import { useAuthStore } from '../store/authStore';
 import { toast } from '../components/Toast';
@@ -67,11 +67,15 @@ const THEME_OPTIONS: { value: ThemePreference; label: string; icon: string }[] =
 export default function Profile() {
   const { user, updateUser, logout } = useAuthStore();
   const navigate   = useNavigate();
+  const location   = useLocation();
   const [loading,        setLoading]        = useState(false);
   const [tab,            setTab]            = useState<Tab>('profile');
   const [themePref,      setThemePref]      = useState<ThemePreference>(getThemePreference);
   // True until the initial profile fetch resolves — prevents showing stale KYC state
   const [kycStatusReady, setKycStatusReady] = useState(false);
+  // When redirected back from KYC widget with ?kyc_done=1, poll until webhook lands
+  const [kycPolling,     setKycPolling]     = useState(false);
+  const kycPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // Profile form — name is display-only; only phone + country are editable
   const [profile, setProfile] = useState({
@@ -87,14 +91,45 @@ export default function Profile() {
   const [rstForm,   setRstForm]    = useState({ password: '', new_pin: '', new_confirm: '' });
 
   useEffect(() => {
+    const kycDone = new URLSearchParams(location.search).get('kyc_done') === '1';
+
     api.get('/me/profile').then(r => {
       const u = r.data.data;
       setProfile({ phone: u.phone ?? '', country: u.country ?? '' });
       updateUser({ kyc_status: u.kyc_status, email_verified: u.email_verified, has_pin: u.has_pin });
       setHasPin(u.has_pin ?? false);
+
+      // ?kyc_done=1: redirected back from the KYC widget. If the webhook hasn't
+      // landed yet (status still 'none'), switch to KYC tab and keep polling
+      // until the status changes so we don't show the wizard from scratch.
+      if (kycDone) {
+        setTab('kyc');
+        if (u.kyc_status === 'none' || u.kyc_status === 'rejected') {
+          setKycPolling(true);
+        }
+      }
     }).catch(() => {})
-      .finally(() => setKycStatusReady(true)); // always unblock, even on error
-  }, [updateUser]);
+      .finally(() => setKycStatusReady(true));
+  }, [updateUser]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Poll every 4s while kycPolling — stops once status becomes pending/approved
+  useEffect(() => {
+    if (!kycPolling) {
+      if (kycPollRef.current) { clearInterval(kycPollRef.current); kycPollRef.current = null; }
+      return;
+    }
+    kycPollRef.current = setInterval(async () => {
+      try {
+        const { data } = await api.get('/me/profile');
+        const status: string = data?.data?.kyc_status ?? 'none';
+        if (status === 'pending' || status === 'approved') {
+          updateUser({ kyc_status: status });
+          setKycPolling(false);
+        }
+      } catch { /* retry */ }
+    }, 4000);
+    return () => { if (kycPollRef.current) { clearInterval(kycPollRef.current); kycPollRef.current = null; } };
+  }, [kycPolling, updateUser]);
 
 
   function handleTheme(pref: ThemePreference) {
@@ -259,12 +294,17 @@ export default function Profile() {
         </div>
 
       ) : tab === 'kyc' ? (
-        // Wait for the live profile fetch before rendering KYC state —
-        // prevents the stale store value ('none') flashing the KycWizard
-        // when the user is actually already pending or approved.
-        !kycStatusReady ? (
+        // Gate on kycStatusReady — prevents the stale store value ('none')
+        // from flashing KycWizard before the live DB fetch resolves.
+        // Also gate on kycPolling — when redirected back from the widget with
+        // ?kyc_done=1, show a waiting state until the webhook lands instead of
+        // showing the wizard from scratch.
+        (!kycStatusReady || kycPolling) ? (
           <div className="card" style={{ textAlign: 'center', padding: '3rem' }}>
-            <span className="spinner" />
+            <span className="spinner" style={{ marginBottom: '1rem', display: 'block' }} />
+            <div style={{ fontSize: '.88rem', color: 'var(--muted)' }}>
+              {kycPolling ? 'Processing your verification…' : ''}
+            </div>
           </div>
         ) : kycStatus === 'approved' ? (
           <div className="card" style={{ textAlign: 'center', padding: '3rem' }}>
