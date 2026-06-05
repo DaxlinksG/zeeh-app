@@ -222,7 +222,7 @@ export async function listUsers(limit = 100): Promise<Omit<User, 'password_hash'
     ProjectionExpression: 'user_id, email, first_name, last_name, phone, country, kyc_status, is_active, created_at, last_login_at',
   }));
   const items = (result.Items ?? []) as Omit<User, 'password_hash'>[];
-  return items.sort((a, b) => b.created_at.localeCompare(a.created_at));
+  return items.sort((a, b) => (b.created_at ?? '').localeCompare(a.created_at ?? ''));
 }
 
 // ── OTP: generate, store (hashed), verify ─────────────────────────────────
