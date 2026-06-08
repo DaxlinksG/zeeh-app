@@ -28,7 +28,11 @@ const transferSchema = z.object({
   state_id: z.number().int().optional(),
   city: z.string().optional(),
   postal_code: z.string().optional(),
-  // GBP/EUR
+  // GBP (Faster Payments)
+  sort_code:     z.string().regex(/^\d{2}-?\d{2}-?\d{2}$/).optional(), // 6-digit, e.g. 20-00-00
+  // EUR (SEPA)
+  iban:          z.string().max(34).optional(),
+  bic:           z.string().max(11).optional(),
   // Internal
   recipient_uid: z.string().optional(),
 });

@@ -23,6 +23,7 @@ import { createPendingDeposit } from './lib/deposits';
 import { runReconciliation, getSnapshots, getLatestSnapshot } from './lib/treasury';
 import { getVirtualAccountByReference, recordVirtualAccountCredit } from './lib/virtualAccountStore';
 import virtualAccountsRouter from './routes/virtualAccounts';
+import currenciesRouter from './routes/currencies';
 import { creditBalance } from './lib/ledger';
 import { warmWalletCache } from './lib/walletCache';
 import { updateKycStatus, getUserById } from './lib/userStore';
@@ -560,6 +561,7 @@ app.use('/api/balance', balanceRouter);
 app.use('/api/account', accountRouter);
 app.use('/api/webhooks', webhooksRouter);
 app.use('/api/virtual-accounts', virtualAccountsRouter);
+app.use('/api/currencies', currenciesRouter);
 
 app.use(errorHandler);
 
