@@ -2,25 +2,29 @@ export const openapiSpec = {
   openapi: '3.0.3',
   info: {
     title: 'Zeeh Africa — Payments API',
-    version: '1.0.0',
+    version: '1.1.0',
     description: `
 ## Overview
-**Zeeh Africa** provides a fast, affordable API for cross-border money movement between Canada, Nigeria, the US, UK, and Europe.
+**Zeeh Africa** provides a fast, affordable API for cross-border money movement across Africa and beyond — covering Canada, Nigeria, the US, UK, Europe, and 13+ African payout corridors.
 
 ---
 
 ## Quick Start
 
 \`\`\`bash
-# 1. Get a live rate
+# 1. See all supported payout currencies
+curl https://api.zeehfi.ca/api/currencies \\
+  -H "x-api-key: YOUR_KEY"
+
+# 2. Get a live rate
 curl https://api.zeehfi.ca/api/rates/CAD/NGN \\
   -H "x-api-key: YOUR_KEY"
 
-# 2. Preview a conversion
+# 3. Preview a conversion
 curl "https://api.zeehfi.ca/api/rates/convert?amount=500&from_currency=CAD&to_currency=NGN" \\
   -H "x-api-key: YOUR_KEY"
 
-# 3. Send money
+# 4. Send money
 curl -X POST https://api.zeehfi.ca/api/transfers \\
   -H "x-api-key: YOUR_KEY" \\
   -H "Content-Type: application/json" \\
@@ -53,15 +57,39 @@ Returns **HTTP 429** when exceeded. Retry after 60 seconds.
 
 ---
 
-## Supported Corridors
+## Supported Payout Corridors
 
-| | 🇨🇦 CAD | 🇳🇬 NGN | 🇺🇸 USD | 🇬🇧 GBP | 🇪🇺 EUR |
-|---|:---:|:---:|:---:|:---:|:---:|
-| 🇨🇦 CAD | — | ✅ | ✅ | ✅ | ✅ |
-| 🇳🇬 NGN | ✅ | — | ✅ | ✅ | ✅ |
-| 🇺🇸 USD | ✅ | ✅ | — | ✅ | ✅ |
-| 🇬🇧 GBP | ✅ | ✅ | ✅ | — | ✅ |
-| 🇪🇺 EUR | ✅ | ✅ | ✅ | ✅ | — |
+### North America & Europe
+| Currency | Method |
+|---|---|
+| 🇨🇦 CAD | Interac eTransfer |
+| 🇳🇬 NGN | Bank Transfer |
+| 🇺🇸 USD | Wire / ACH |
+| 🇬🇧 GBP | Contact support |
+| 🇪🇺 EUR | Contact support |
+
+### Africa — Bank Transfer
+| Currency | Country |
+|---|---|
+| 🇬🇭 GHS | Ghana |
+| 🇿🇦 ZAR | South Africa |
+| 🇪🇬 EGP | Egypt |
+| 🇪🇹 ETB | Ethiopia |
+| 🇲🇼 MWK | Malawi |
+
+### Africa — Mobile Money
+| Currency | Country | Default Network |
+|---|---|---|
+| 🇰🇪 KES | Kenya | Safaricom (M-Pesa) |
+| 🇹🇿 TZS | Tanzania | Airtel |
+| 🇺🇬 UGX | Uganda | MTN |
+| 🇷🇼 RWF | Rwanda | MTN |
+| 🇿🇲 ZMW | Zambia | Airtel |
+| XAF | Cameroon | Orange |
+| XOF | Côte d'Ivoire | Wave |
+| 🇸🇱 SLL | Sierra Leone | Africell |
+
+> Use \`GET /api/currencies\` to see live status and required fields for every corridor.
     `,
     contact: {
       name: 'Zeeh Africa Support',
@@ -76,8 +104,9 @@ Returns **HTTP 429** when exceeded. Retry after 60 seconds.
   security: [{ ApiKeyAuth: [] }],
 
   tags: [
+    { name: 'Currencies', description: 'Supported payout corridors and required fields per currency' },
     { name: 'Rates',     description: 'Live exchange rates and conversion calculator' },
-    { name: 'Transfers', description: 'Send money to a bank account' },
+    { name: 'Transfers', description: 'Send money to a bank account or mobile wallet' },
     { name: 'Swaps',     description: 'Convert between your wallets' },
     { name: 'Wallets',   description: 'Balances, deposit instructions (on-ramp), and transaction history' },
     { name: 'Banks',     description: 'Bank lookup and account validation' },
@@ -292,6 +321,87 @@ Returns **HTTP 429** when exceeded. Retry after 60 seconds.
       },
     },
 
+    // ── CURRENCIES ───────────────────────────────────────────────
+    '/api/currencies': {
+      get: {
+        tags: ['Currencies'],
+        summary: 'List all supported payout currencies',
+        description: `Returns every currency Zeeh supports for outbound payouts, with live status and the exact request fields required for each one.
+
+Use this endpoint to:
+- Discover available corridors before building your payout flow
+- Show only active currencies in your UI
+- Get the \`payout_fields\` required for each currency's transfer request
+
+**Status values:**
+| Status | Meaning |
+|---|---|
+| \`active\` | Live and available for payouts |
+| \`contact_support\` | Available — contact zeehafricah@gmail.com to activate |
+| \`coming_soon\` | In progress, not yet live |`,
+        responses: {
+          200: {
+            description: 'List of supported currencies with payout status',
+            content: {
+              'application/json': {
+                example: {
+                  success: true,
+                  data: {
+                    currencies: [
+                      {
+                        currency: 'NGN',
+                        name: 'Nigerian Naira',
+                        flag: '🇳🇬',
+                        payout_status: 'active',
+                        payout_method: 'Bank Transfer',
+                        payout_fields: ['bank_id', 'account_number', 'account_name'],
+                      },
+                      {
+                        currency: 'CAD',
+                        name: 'Canadian Dollar',
+                        flag: '🇨🇦',
+                        payout_status: 'active',
+                        payout_method: 'Interac eTransfer',
+                        payout_fields: ['recipient_email'],
+                      },
+                      {
+                        currency: 'KES',
+                        name: 'Kenyan Shilling',
+                        flag: '🇰🇪',
+                        payout_status: 'active',
+                        payout_method: 'Mobile Money (Safaricom)',
+                        payout_fields: ['msisdn', 'recipient_first_name', 'recipient_last_name'],
+                        notes: 'msisdn must include country code, e.g. 254712345678',
+                      },
+                      {
+                        currency: 'ZAR',
+                        name: 'South African Rand',
+                        flag: '🇿🇦',
+                        payout_status: 'active',
+                        payout_method: 'Bank Transfer',
+                        payout_fields: ['account_number', 'account_bank', 'recipient_first_name', 'recipient_last_name', 'recipient_email', 'recipient_phone', 'recipient_address', 'recipient_city', 'recipient_postal_code'],
+                        notes: 'South Africa requires additional compliance fields',
+                      },
+                      {
+                        currency: 'GBP',
+                        name: 'British Pound',
+                        flag: '🇬🇧',
+                        payout_status: 'contact_support',
+                        payout_method: 'Faster Payments',
+                        payout_fields: [],
+                      },
+                    ],
+                    count: 18,
+                  },
+                },
+              },
+            },
+          },
+          401: { $ref: '#/components/responses/Unauthorized' },
+        },
+      },
+    },
+
     // ── RATES ─────────────────────────────────────────────────────
     '/api/rates': {
       get: {
@@ -425,19 +535,33 @@ Returns **HTTP 429** when exceeded. Retry after 60 seconds.
       post: {
         tags: ['Transfers'],
         summary: 'Send money',
-        description: `Initiate a payout to a recipient's bank account.
+        description: `Initiate a payout to a recipient's bank account or mobile money wallet.
 
 **Required fields by currency:**
 
-| Currency | Required fields |
-|---|---|
-| 🇳🇬 NGN | \`bank_id\`, \`account_number\`, \`account_name\` |
-| 🇨🇦 CAD | \`recipient_email\` (Interac eTransfer) |
-| 🇺🇸 USD | \`account_number\`, \`bank_name\`, \`routing_number\`, \`email\`, \`account_type\` |
-| 🇬🇧 GBP / 🇪🇺 EUR | Contact support |
+| Currency | Method | Required fields |
+|---|---|---|
+| 🇳🇬 NGN | Bank transfer | \`bank_id\`, \`account_number\`, \`account_name\` |
+| 🇨🇦 CAD | Interac eTransfer | \`recipient_email\` |
+| 🇺🇸 USD | Wire / ACH | \`account_number\`, \`bank_name\`, \`routing_number\`, \`email\`, \`account_type\` |
+| 🇬🇭 GHS | Bank transfer | \`account_number\`, \`account_bank\`, \`recipient_first_name\`, \`recipient_last_name\` |
+| 🇿🇦 ZAR | Bank transfer | \`account_number\`, \`account_bank\`, \`recipient_first_name\`, \`recipient_last_name\`, \`recipient_email\`, \`recipient_phone\`, \`recipient_address\`, \`recipient_city\`, \`recipient_postal_code\` |
+| 🇪🇬 EGP | Bank transfer | \`account_number\`, \`account_bank\`, \`recipient_first_name\`, \`recipient_last_name\` |
+| 🇪🇹 ETB | Bank transfer | \`account_number\`, \`account_bank\`, \`recipient_first_name\`, \`recipient_last_name\` |
+| 🇲🇼 MWK | Bank transfer | \`account_number\`, \`account_bank\`, \`recipient_first_name\`, \`recipient_last_name\` |
+| 🇰🇪 KES | Mobile money | \`msisdn\` (phone with country code), optional \`mobile_network\` |
+| 🇹🇿 TZS | Mobile money | \`msisdn\`, optional \`mobile_network\` |
+| 🇺🇬 UGX | Mobile money | \`msisdn\`, optional \`mobile_network\` |
+| 🇷🇼 RWF | Mobile money | \`msisdn\`, optional \`mobile_network\` |
+| 🇿🇲 ZMW | Mobile money | \`msisdn\`, optional \`mobile_network\` |
+| XAF | Mobile money | \`msisdn\`, optional \`mobile_network\` |
+| XOF | Mobile money | \`msisdn\`, optional \`mobile_network\` |
+| 🇸🇱 SLL | Mobile money | \`msisdn\`, optional \`mobile_network\` |
+| 🇬🇧 GBP / 🇪🇺 EUR | — | Contact support |
 
-> **Tip:** Use \`GET /api/account/banks\` to get the \`bank_id\` for NGN transfers.
-> Use \`POST /api/account/banks/validate\` to verify the account before sending.`,
+> **Tip:** Use \`GET /api/currencies\` to see live status and required fields per corridor.
+> Use \`GET /api/account/banks\` for the \`bank_id\` for NGN and \`account_bank\` codes for African bank transfers.
+> Use \`POST /api/account/banks/validate\` to verify an account before sending.`,
         requestBody: {
           required: true,
           content: {
@@ -447,21 +571,39 @@ Returns **HTTP 429** when exceeded. Retry after 60 seconds.
                 required: ['amount', 'currency', 'client_reference'],
                 properties: {
                   amount:           { type: 'string', example: '50000.00', description: 'Amount as a decimal string' },
-                  currency:         { type: 'string', enum: ['NGN', 'CAD', 'USD', 'GBP', 'EUR'], example: 'NGN' },
+                  currency: {
+                    type: 'string',
+                    enum: ['NGN','CAD','USD','GBP','EUR','GHS','ZAR','EGP','ETB','MWK','KES','TZS','UGX','RWF','ZMW','XAF','XOF','SLL'],
+                    example: 'NGN',
+                    description: '3-letter ISO currency code. Use GET /api/currencies to see full list with live status.',
+                  },
                   client_reference: { type: 'string', example: 'TRF-001', description: 'Your unique reference — used for idempotency and tracking' },
                   description:      { type: 'string', example: 'Salary payment' },
                   reference:        { type: 'string', example: 'INV-2026-001' },
-                  // NGN
+                  // ── NGN ───────────────────────────────────────────
                   bank_id:          { type: 'integer', example: 10, description: '🇳🇬 NGN — bank ID from GET /api/account/banks' },
-                  account_number:   { type: 'string', example: '0123456789', description: '🇳🇬 NGN / 🇺🇸 USD' },
+                  account_number:   { type: 'string', example: '0123456789', description: '🇳🇬 NGN / 🇺🇸 USD / African bank transfers' },
                   account_name:     { type: 'string', example: 'John Doe', description: '🇳🇬 NGN' },
-                  // CAD
-                  recipient_email:  { type: 'string', format: 'email', example: 'jane@example.com', description: '🇨🇦 CAD — Interac eTransfer email' },
-                  // USD
+                  // ── CAD ───────────────────────────────────────────
+                  recipient_email:  { type: 'string', format: 'email', example: 'jane@example.com', description: '🇨🇦 CAD — Interac eTransfer email. Also required for 🇿🇦 ZAR.' },
+                  // ── USD ───────────────────────────────────────────
                   bank_name:        { type: 'string', example: 'Chase Bank', description: '🇺🇸 USD' },
                   routing_number:   { type: 'string', example: '021000021', description: '🇺🇸 USD — 9-digit routing number' },
                   email:            { type: 'string', format: 'email', example: 'john@example.com', description: '🇺🇸 USD' },
                   account_type:     { type: 'string', enum: ['checking', 'savings'], description: '🇺🇸 USD' },
+                  // ── African bank transfers (GHS, ZAR, EGP, ETB, MWK) ──
+                  account_bank:         { type: 'string', example: '044', description: 'African bank transfers — bank code (e.g. "044" for Access Bank GH). Use GET /api/account/banks?currency=GHS for codes.' },
+                  recipient_first_name: { type: 'string', example: 'Amara', description: 'African bank transfers — recipient first name' },
+                  recipient_last_name:  { type: 'string', example: 'Mensah', description: 'African bank transfers — recipient last name' },
+                  // ── ZAR compliance extras ─────────────────────────
+                  recipient_phone:        { type: 'string', example: '821234567', description: '🇿🇦 ZAR only — recipient phone (without country code)' },
+                  recipient_address:      { type: 'string', example: '12 Long Street', description: '🇿🇦 ZAR only — street address' },
+                  recipient_city:         { type: 'string', example: 'Cape Town', description: '🇿🇦 ZAR only' },
+                  recipient_country:      { type: 'string', example: 'ZA', description: '🇿🇦 ZAR only — ISO-3166 alpha-2, defaults to ZA' },
+                  recipient_postal_code:  { type: 'string', example: '8001', description: '🇿🇦 ZAR only' },
+                  // ── Mobile money (KES, TZS, UGX, RWF, ZMW, XAF, XOF, SLL) ──
+                  msisdn:         { type: 'string', example: '254712345678', description: 'Mobile money — recipient phone with country code (e.g. 254 for Kenya, 255 for Tanzania)' },
+                  mobile_network: { type: 'string', example: 'Safaricom', description: 'Mobile money — override default network. Defaults: KES→Safaricom, TZS→Airtel, UGX→MTN, RWF→MTN, ZMW→Airtel, XAF→Orange, XOF→Wave, SLL→Africell' },
                 },
               },
               examples: {
@@ -476,6 +618,22 @@ Returns **HTTP 429** when exceeded. Retry after 60 seconds.
                 USD: {
                   summary: '🇺🇸 USD wire transfer',
                   value: { currency: 'USD', amount: '1000.00', account_number: '123456789', account_name: 'John Doe', bank_name: 'Chase Bank', routing_number: '021000021', email: 'john@example.com', account_type: 'checking', client_reference: 'TRF-003' },
+                },
+                GHS: {
+                  summary: '🇬🇭 GHS Ghana bank transfer',
+                  value: { currency: 'GHS', amount: '500.00', account_number: '0123456789', account_bank: '044', recipient_first_name: 'Amara', recipient_last_name: 'Mensah', description: 'Payout', client_reference: 'TRF-004' },
+                },
+                KES: {
+                  summary: '🇰🇪 KES Kenya mobile money (M-Pesa)',
+                  value: { currency: 'KES', amount: '2000.00', msisdn: '254712345678', recipient_first_name: 'James', recipient_last_name: 'Kamau', description: 'Mobile payout', client_reference: 'TRF-005' },
+                },
+                ZAR: {
+                  summary: '🇿🇦 ZAR South Africa bank transfer',
+                  value: { currency: 'ZAR', amount: '1500.00', account_number: '62834567891', account_bank: 'FNBZAJJ', recipient_first_name: 'Thabo', recipient_last_name: 'Nkosi', recipient_email: 'thabo@example.com', recipient_phone: '821234567', recipient_address: '12 Long Street', recipient_city: 'Cape Town', recipient_postal_code: '8001', description: 'Payout', client_reference: 'TRF-006' },
+                },
+                XOF: {
+                  summary: 'XOF Côte d\'Ivoire mobile money (Wave)',
+                  value: { currency: 'XOF', amount: '50000.00', msisdn: '2250701234567', recipient_first_name: 'Kofi', recipient_last_name: 'Asante', description: 'Mobile payout', client_reference: 'TRF-007' },
                 },
               },
             },
