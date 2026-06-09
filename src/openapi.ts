@@ -604,6 +604,8 @@ Use this endpoint to:
                   // ── Mobile money (KES, TZS, UGX, RWF, ZMW, XAF, XOF, SLL) ──
                   msisdn:         { type: 'string', example: '254712345678', description: 'Mobile money — recipient phone with country code (e.g. 254 for Kenya, 255 for Tanzania)' },
                   mobile_network: { type: 'string', example: 'Safaricom', description: 'Mobile money — override default network. Defaults: KES→Safaricom, TZS→Airtel, UGX→MTN, RWF→MTN, ZMW→Airtel, XAF→Orange, XOF→Wave, SLL→Africell' },
+                  // ── Reconciliation ────────────────────────────────
+                  virtual_account_id: { type: 'string', example: 'VA-4F8B2C1A', description: 'Optional. Tag this transfer to one of your virtual accounts. Stored in the ledger transaction — lets you reconcile payouts against which customer/virtual account they came from. Use GET /api/balance/transactions/history to query.' },
                 },
               },
               examples: {

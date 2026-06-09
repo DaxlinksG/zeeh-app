@@ -46,8 +46,9 @@ const transferSchema = z.object({
   recipient_city:    z.string().max(100).optional(),
   recipient_country: z.string().length(2).optional(),    // ISO-3166 alpha-2
   recipient_postal_code: z.string().max(20).optional(),
-  // Internal
-  recipient_uid: z.string().optional(),
+  // Internal / reconciliation
+  recipient_uid:      z.string().optional(),
+  virtual_account_id: z.string().max(100).optional(),  // tag transfer to a VA for client-side reconciliation
 });
 
 // POST /api/transfers
@@ -86,7 +87,11 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
         clientId, currency, amount, 'transfer',
         client_reference,
         parsed.data.description ?? `Transfer ${amount} ${currency}`,
-        { currency, amount },
+        {
+          currency,
+          amount,
+          ...(parsed.data.virtual_account_id ? { virtual_account_id: parsed.data.virtual_account_id } : {}),
+        },
       );
     } catch (err) {
       if (err instanceof InsufficientBalanceError) {
