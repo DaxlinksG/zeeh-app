@@ -82,7 +82,7 @@ app.use(express.json({
   limit: '8mb',
   verify: (req, _res, buf) => {
     const path = (req as express.Request).path;
-    if (path === '/webhooks/receive' || path === '/webhooks/kyc') {
+    if (path === '/webhooks/receive' || path === '/webhooks/kyc' || path === '/webhooks/flutterwave') {
       (req as express.Request & { rawBody?: Buffer }).rawBody = buf;
     }
   },
@@ -501,6 +501,59 @@ app.post('/webhooks/kyc', async (req, res) => {
   }).catch(() => {});
 
   console.log(`✅  KYC webhook processed: user=${userId} → ${newStatus}`);
+  res.status(200).json({ received: true });
+});
+
+// ── Flutterwave webhook ────────────────────────────────────────────────────
+// Verifies HMAC-SHA256 signature (flutterwave-signature header, base64 encoded).
+// Handles transfer.completed and transfer.failed events.
+// FLW_WEBHOOK_HASH must match the secret hash configured in the Flutterwave dashboard.
+app.post('/webhooks/flutterwave', async (req, res) => {
+  const { createHmac } = await import('crypto');
+  const flwWebhookHash = process.env.FLW_WEBHOOK_HASH ?? '';
+  const rawBody = (req as express.Request & { rawBody?: Buffer }).rawBody;
+
+  // Verify signature if hash is configured
+  if (flwWebhookHash && rawBody) {
+    const signature = req.headers['flutterwave-signature'] as string | undefined;
+    if (!signature) {
+      console.warn('⚠️  Flutterwave webhook: missing flutterwave-signature header');
+      res.status(401).json({ error: 'Missing signature' });
+      return;
+    }
+    const expected = createHmac('sha256', flwWebhookHash)
+      .update(rawBody)
+      .digest('base64');
+    if (signature !== expected) {
+      console.warn('⚠️  Flutterwave webhook: signature mismatch');
+      res.status(401).json({ error: 'Invalid signature' });
+      return;
+    }
+  }
+
+  const event = req.body as Record<string, unknown>;
+  const eventType = event?.type as string | undefined;
+  const data      = event?.data as Record<string, unknown> | undefined;
+
+  console.log(`📨  Flutterwave webhook: type=${eventType}`);
+
+  // transfer.completed — payout succeeded
+  if (eventType === 'transfer.completed') {
+    const reference  = data?.reference as string | undefined;
+    const status     = data?.status    as string | undefined;
+    console.log(`✅  FLW transfer completed: reference=${reference} status=${status}`);
+    // Future: notify B2B client webhook here
+  }
+
+  // transfer.failed — payout failed; refund will have already been attempted
+  // at the API call layer (see transfers.ts), but log it for ops visibility.
+  if (eventType === 'transfer.failed') {
+    const reference = data?.reference as string | undefined;
+    const reason    = data?.reason    as string | undefined;
+    console.error(`❌  FLW transfer failed: reference=${reference} reason=${reason}`);
+    // Future: trigger refund lookup + notify B2B client
+  }
+
   res.status(200).json({ received: true });
 });
 
