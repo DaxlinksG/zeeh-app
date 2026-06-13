@@ -1105,6 +1105,35 @@ Each currency has its own dedicated account — funds credited automatically upo
     },
 
     // ── BANKS ─────────────────────────────────────────────────────
+    '/api/account/states': {
+      get: {
+        tags: ['Banks'],
+        summary: 'List US states',
+        description: 'Returns all US states with their `id` and `code`. Use the `id` as the `state_id` field when sending USD wire transfers.',
+        responses: {
+          200: {
+            description: 'US states list',
+            content: {
+              'application/json': {
+                example: {
+                  success: true,
+                  data: {
+                    states: [
+                      { id: 5,  code: 'CA', name: 'California' },
+                      { id: 32, code: 'NY', name: 'New York' },
+                      { id: 43, code: 'TX', name: 'Texas' },
+                    ],
+                    count: 51,
+                  },
+                },
+              },
+            },
+          },
+          401: { $ref: '#/components/responses/Unauthorized' },
+        },
+      },
+    },
+
     '/api/account/banks': {
       get: {
         tags: ['Banks'],
