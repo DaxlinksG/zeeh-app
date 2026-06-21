@@ -116,7 +116,9 @@ export default function Profile() {
       .finally(() => setKycStatusReady(true));
   }, [updateUser]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Poll every 4s while kycPolling — stops once status becomes pending/approved.
+  // Poll every 4s while kycPolling — stops once status becomes pending/approved/rejected.
+  // rejected is a terminal state too — must stop polling and show the
+  // re-submit panel, not be left spinning as if still in progress.
   // Bails out after 60s if the webhook never lands, so a dropped/failed webhook
   // can't trap the user on this spinner forever — falls back to the wizard instead.
   useEffect(() => {
@@ -129,7 +131,7 @@ export default function Profile() {
       try {
         const { data } = await api.get('/me/profile');
         const status: string = data?.data?.kyc_status ?? 'none';
-        if (status === 'pending' || status === 'approved') {
+        if (status === 'pending' || status === 'approved' || status === 'rejected') {
           updateUser({ kyc_status: status });
           setKycPolling(false);
         }
@@ -343,8 +345,17 @@ export default function Profile() {
               user={{ first_name: user?.first_name ?? '', last_name: user?.last_name ?? '', email: user?.email ?? '' }}
               onComplete={(status) => {
                 updateUser({ kyc_status: status });
-                toast(status === 'approved' ? 'Identity verified! ✅' : 'Verification submitted — under review');
-                setTab('profile');
+                if (status === 'approved') {
+                  toast('Identity verified! ✅');
+                  setTab('profile');
+                } else if (status === 'pending') {
+                  toast('Verification submitted — under review');
+                  setTab('profile');
+                } else {
+                  // rejected — keep them on the KYC tab so they immediately see
+                  // why and can re-submit, instead of bouncing to the profile tab
+                  toast('We couldn\'t verify your identity. Please try again.', 'err');
+                }
               }}
               onError={msg => toast(msg, 'err')}
             />

@@ -9,8 +9,10 @@
  *  5. On status change → notify parent, iframe closes
  *
  * Edge cases handled:
- *  - User closes widget (X): check status first; if pending/approved → onComplete
+ *  - User closes widget (X): check status first; if pending/approved/rejected → onComplete
  *  - startKyc blocked with KYC_PENDING/KYC_APPROVED: tell parent the real status
+ *  - rejected is a terminal state too — must close the wizard and show the
+ *    rejection panel, not be left treated as "still in progress"
  */
 
 import { useState, useEffect, useRef } from 'react';
@@ -18,7 +20,7 @@ import api from '../lib/api';
 
 export interface KycWizardProps {
   user: { first_name: string; last_name: string; email: string };
-  onComplete: (status: 'approved' | 'pending') => void;
+  onComplete: (status: 'approved' | 'pending' | 'rejected') => void;
   onError?: (msg: string) => void;
 }
 
@@ -40,10 +42,10 @@ export function KycWizard({ onComplete, onError }: KycWizardProps) {
       try {
         const { data } = await api.get('/me/profile');
         const status: string = data?.data?.kyc_status ?? 'none';
-        if (status === 'approved' || status === 'pending') {
+        if (status === 'approved' || status === 'pending' || status === 'rejected') {
           clearInterval(pollRef.current!);
           pollRef.current = null;
-          onComplete(status as 'approved' | 'pending');
+          onComplete(status as 'approved' | 'pending' | 'rejected');
         }
       } catch { /* retry */ }
     }, 5000);
@@ -80,8 +82,8 @@ export function KycWizard({ onComplete, onError }: KycWizardProps) {
     try {
       const { data } = await api.get('/me/profile');
       const status: string = data?.data?.kyc_status ?? 'none';
-      if (status === 'approved' || status === 'pending') {
-        onComplete(status as 'approved' | 'pending');
+      if (status === 'approved' || status === 'pending' || status === 'rejected') {
+        onComplete(status as 'approved' | 'pending' | 'rejected');
         return;
       }
     } catch { /* ignore — fall through to intro */ }
