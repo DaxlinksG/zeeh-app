@@ -360,9 +360,9 @@ app.post('/webhooks/receive', async (req, res) => {
 // ── KYC webhook receiver — kyc.zeehfi.ca calls this when a session completes ──
 //
 // Payload:  { "event": "session.approved", "session_id": "ses_...", "timestamp": <unix>, "data": { ... } }
-// Header:   X-KYC-Signature: sha256=<timestamp>.<hmac-sha256>
+// Header:   X-KYC-Signature: t=<unix-timestamp>,v1=<hmac-sha256-hex>  (Stripe-style)
 // HMAC key: KYC_WEBHOOK_SECRET
-// HMAC input: `${timestamp}.${rawBody}`  (timestamp is the first part before the dot)
+// HMAC input: `${t}.${rawBody}`
 // Events:   session.approved | session.rejected | session.manual_review
 //
 app.post('/webhooks/kyc', async (req, res) => {
@@ -370,27 +370,27 @@ app.post('/webhooks/kyc', async (req, res) => {
   const kycWebhookSecret = process.env.KYC_WEBHOOK_SECRET;
 
   // ── Signature verification ─────────────────────────────────────────────────
-  // Header: "X-KYC-Signature: sha256=<timestamp>.<hex-hmac>"
-  // Parse: strip "sha256=", split on first "." → [timestamp, hash]
-  // HMAC is computed over "${timestamp}.${rawBody}"
+  // Header: "X-KYC-Signature: t=1782039793,v1=725376909ffb5a..." (Stripe-style)
+  // Parse comma-separated key=value pairs → { t, v1 }
+  // HMAC is computed over "${t}.${rawBody}"
   if (kycWebhookSecret) {
     const sigHeader = (req.headers['x-kyc-signature'] ?? '') as string;
     if (!sigHeader || !rawBody) {
       console.warn('⚠️  KYC webhook missing signature or body — rejected');
       res.status(401).json({ error: 'Missing signature' }); return;
     }
-    if (!sigHeader.startsWith('sha256=')) {
-      console.warn('⚠️  KYC webhook unexpected signature format:', sigHeader.slice(0, 30));
+    const parts: Record<string, string> = {};
+    for (const pair of sigHeader.split(',')) {
+      const eqIdx = pair.indexOf('=');
+      if (eqIdx === -1) continue;
+      parts[pair.slice(0, eqIdx).trim()] = pair.slice(eqIdx + 1).trim();
+    }
+    const ts       = parts.t;
+    const received = parts.v1;
+    if (!ts || !received) {
+      console.warn('⚠️  KYC webhook unexpected signature format:', sigHeader.slice(0, 60));
       res.status(401).json({ error: 'Unsupported signature format' }); return;
     }
-    const withoutPrefix = sigHeader.slice(7); // strip "sha256="
-    const dotIdx = withoutPrefix.indexOf('.');
-    if (dotIdx === -1) {
-      console.warn('⚠️  KYC webhook signature missing timestamp separator');
-      res.status(401).json({ error: 'Malformed signature' }); return;
-    }
-    const ts       = withoutPrefix.slice(0, dotIdx);
-    const received = withoutPrefix.slice(dotIdx + 1);
     const { createHmac, timingSafeEqual } = await import('crypto');
     const signingInput = `${ts}.${rawBody.toString('utf-8')}`;
     const expected = createHmac('sha256', kycWebhookSecret).update(signingInput).digest('hex');
