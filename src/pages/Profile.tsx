@@ -75,7 +75,8 @@ export default function Profile() {
   const [kycStatusReady, setKycStatusReady] = useState(false);
   // When redirected back from KYC widget with ?kyc_done=1, poll until webhook lands
   const [kycPolling,     setKycPolling]     = useState(false);
-  const kycPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const kycPollRef        = useRef<ReturnType<typeof setInterval> | null>(null);
+  const kycPollTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Profile form — name is display-only; only phone + country are editable
   const [profile, setProfile] = useState({
@@ -107,15 +108,21 @@ export default function Profile() {
         if (u.kyc_status === 'none' || u.kyc_status === 'rejected') {
           setKycPolling(true);
         }
+        // Strip ?kyc_done=1 so a reload/back-nav can't re-trigger polling
+        // off a stale query param once this redirect has been handled.
+        navigate('/profile', { replace: true });
       }
     }).catch(() => {})
       .finally(() => setKycStatusReady(true));
   }, [updateUser]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Poll every 4s while kycPolling — stops once status becomes pending/approved
+  // Poll every 4s while kycPolling — stops once status becomes pending/approved.
+  // Bails out after 60s if the webhook never lands, so a dropped/failed webhook
+  // can't trap the user on this spinner forever — falls back to the wizard instead.
   useEffect(() => {
     if (!kycPolling) {
       if (kycPollRef.current) { clearInterval(kycPollRef.current); kycPollRef.current = null; }
+      if (kycPollTimeoutRef.current) { clearTimeout(kycPollTimeoutRef.current); kycPollTimeoutRef.current = null; }
       return;
     }
     kycPollRef.current = setInterval(async () => {
@@ -128,7 +135,14 @@ export default function Profile() {
         }
       } catch { /* retry */ }
     }, 4000);
-    return () => { if (kycPollRef.current) { clearInterval(kycPollRef.current); kycPollRef.current = null; } };
+    kycPollTimeoutRef.current = setTimeout(() => {
+      setKycPolling(false);
+      toast('Still waiting on verification — you can try again.', 'err');
+    }, 60000);
+    return () => {
+      if (kycPollRef.current) { clearInterval(kycPollRef.current); kycPollRef.current = null; }
+      if (kycPollTimeoutRef.current) { clearTimeout(kycPollTimeoutRef.current); kycPollTimeoutRef.current = null; }
+    };
   }, [kycPolling, updateUser]);
 
 
@@ -305,6 +319,15 @@ export default function Profile() {
             <div style={{ fontSize: '.88rem', color: 'var(--muted)' }}>
               {kycPolling ? 'Processing your verification…' : ''}
             </div>
+            {kycPolling && (
+              <button
+                className="btn btn-sm"
+                style={{ marginTop: '1.2rem' }}
+                onClick={() => setKycPolling(false)}
+              >
+                Cancel and try again
+              </button>
+            )}
           </div>
         ) : kycStatus === 'approved' ? (
           <div className="card" style={{ textAlign: 'center', padding: '3rem' }}>
