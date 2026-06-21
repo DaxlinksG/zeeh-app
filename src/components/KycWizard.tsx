@@ -130,17 +130,24 @@ export function KycWizard({ onComplete, onError }: KycWizardProps) {
     </div>
   );
 
-  // Full-screen iframe overlay
+  // Full-screen iframe overlay.
+  // iOS Safari has a long-standing bug where an <iframe> (a replaced element)
+  // given `flex: 1` inside a flex column resolves to zero height — it never
+  // receives its share of space, so the iframe renders with nothing visible.
+  // Fix: give the container an explicit height (dvh, not just inset:0 — iOS's
+  // dynamic toolbar makes inset:0 unreliable for height too) and size the
+  // iframe with an absolute/explicit height instead of relying on flex-basis.
+  const TOPBAR_HEIGHT = 45;
   return (
     <div style={{
       position: 'fixed', inset: 0, zIndex: 1000,
-      display: 'flex', flexDirection: 'column',
+      height: '100dvh', width: '100vw',
       background: '#fff',
     }}>
       {/* Thin top bar with cancel */}
       <div style={{
         display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-        padding: '10px 16px', flexShrink: 0,
+        padding: '10px 16px', height: TOPBAR_HEIGHT, boxSizing: 'border-box',
         background: 'var(--bg, #07070f)',
         borderBottom: '1px solid var(--border, rgba(255,255,255,0.08))',
       }}>
@@ -158,7 +165,10 @@ export function KycWizard({ onComplete, onError }: KycWizardProps) {
 
       <iframe
         src={verifyUrl}
-        style={{ flex: 1, border: 'none', display: 'block' }}
+        style={{
+          border: 'none', display: 'block',
+          width: '100%', height: `calc(100dvh - ${TOPBAR_HEIGHT}px)`,
+        }}
         allow="camera; microphone"
         title="Identity Verification"
       />
