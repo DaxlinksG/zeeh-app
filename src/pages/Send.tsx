@@ -506,7 +506,7 @@ export default function Send() {
                 <span style={{ fontSize: '.82rem', color: 'var(--accent2)', fontWeight: 600 }}>Rate</span>
                 <span style={{ fontSize: '.88rem', fontWeight: 700 }}>
                   {direction === 'CAD_NGN'
-                    ? `1 CAD = ${fmtRate(quote.customer_rate)} NGN`
+                    ? `1 CAD = ${fmtRate(1 / quote.customer_rate)} NGN`
                     : `₦1,000 = ${fmtCAD(1000 * quote.customer_rate)}`}
                 </span>
               </div>
@@ -718,7 +718,7 @@ export default function Send() {
               <>
                 <InfoRow label="You pay"         value={quote ? fmtCAD(quote.cad_amount) : '—'} />
                 <InfoRow label="Recipient gets"  value={fmtNGN(parseFloat(ngnInput))} />
-                <InfoRow label="Rate"            value={quote ? `1 CAD = ${fmtRate(quote.customer_rate)} NGN` : '—'} />
+                <InfoRow label="Rate"            value={quote ? `1 CAD = ${fmtRate(1 / quote.customer_rate)} NGN` : '—'} />
                 <InfoRow label="Bank"            value={NG_BANKS.find(b => b.code === bankCode)?.name ?? bankCode} />
                 <InfoRow label="Account number"  value={recipientAccount} mono />
                 <InfoRow label="Account name"    value={recipientName} />
@@ -870,7 +870,7 @@ export default function Send() {
             </button>
           )}
 
-          {(!order || ['awaiting_payment', 'cad_received', 'payout_initiated'].includes(order.status)) && (
+          {(!order || ['awaiting_payment', 'cad_received', 'ngn_received', 'payout_initiated'].includes(order.status)) && (
             <div style={{ textAlign: 'center', color: 'var(--muted)', fontSize: '.8rem', marginTop: '1rem' }}>
               This page updates automatically every 5 seconds.
             </div>
