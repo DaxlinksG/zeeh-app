@@ -165,6 +165,11 @@ export async function rcGetPayout(payoutId: string): Promise<RcPayout> {
   return res.data;
 }
 
+export async function rcGetDeposit(depositId: string): Promise<RcDeposit> {
+  const res = await rc.get<RcDeposit>(`/deposits/${depositId}`);
+  return res.data;
+}
+
 // ── Balances ───────────────────────────────────────────────────────────────
 
 export async function rcGetBalances(): Promise<RcBalance[]> {

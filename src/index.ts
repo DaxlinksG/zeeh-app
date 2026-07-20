@@ -30,7 +30,7 @@ import { warmWalletCache } from './lib/walletCache';
 import { updateKycStatus, getUserById, updateUser } from './lib/userStore';
 import type { KycStatus } from './lib/userStore';
 import { getPendingOrderForCustomer, updateSendOrderStatus } from './lib/sendOrderStore';
-import { rcCreatePayout } from './lib/remitclickClient';
+import { rcCreatePayout, rcGetDeposit, rcGetPayout } from './lib/remitclickClient';
 import { sendKycSubmitted, sendAdminKycAlert } from './lib/mailer';
 import { getUserIdByKycSession } from './lib/kycSessionStore';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
@@ -780,7 +780,21 @@ app.post('/webhooks/remitclick', express.json(), async (req, res) => {
     const rcCustomerId = data.customerId as string;
     const depositId = data.id as string;
 
-    // Find a pending send order for this customer and auto-fire the payout
+    // Verify this deposit actually exists and is completed in RemitClick's system.
+    // This is our primary protection against spoofed webhook events (RC has no signing secrets).
+    let verifiedDeposit;
+    try {
+      verifiedDeposit = await rcGetDeposit(depositId);
+    } catch {
+      console.warn('[RC webhook] deposit.completed — deposit not found in RC, ignoring', depositId);
+      return res.status(200).json({ received: true }); // ack to stop retries, but don't act
+    }
+
+    if (verifiedDeposit.status !== 'completed' || verifiedDeposit.customerId !== rcCustomerId) {
+      console.warn('[RC webhook] deposit.completed — verification mismatch, ignoring', depositId);
+      return res.status(200).json({ received: true });
+    }
+
     const order = await getPendingOrderForCustomer(rcCustomerId).catch(() => null);
     if (order) {
       try {
@@ -810,6 +824,18 @@ app.post('/webhooks/remitclick', express.json(), async (req, res) => {
 
   if (type === 'payout.completed') {
     const reference = data.reference as string | undefined;
+    const payoutId = data.id as string;
+
+    // Verify payout status with RC before marking order complete
+    try {
+      const verifiedPayout = await rcGetPayout(payoutId);
+      if (verifiedPayout.status !== 'completed' || verifiedPayout.reference !== reference) {
+        return res.status(200).json({ received: true });
+      }
+    } catch {
+      return res.status(200).json({ received: true });
+    }
+
     if (reference) {
       await updateSendOrderStatus(reference, 'completed', {
         completed_at: new Date().toISOString(),
@@ -819,6 +845,18 @@ app.post('/webhooks/remitclick', express.json(), async (req, res) => {
 
   if (type === 'payout.failed') {
     const reference = data.reference as string | undefined;
+    const payoutId = data.id as string;
+
+    // Verify with RC before marking failed
+    try {
+      const verifiedPayout = await rcGetPayout(payoutId);
+      if (verifiedPayout.status !== 'failed' || verifiedPayout.reference !== reference) {
+        return res.status(200).json({ received: true });
+      }
+    } catch {
+      return res.status(200).json({ received: true });
+    }
+
     if (reference) {
       await updateSendOrderStatus(reference, 'failed', {
         failure_reason: (data.failureReason as string) ?? 'RemitClick payout failed',
