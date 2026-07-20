@@ -30,10 +30,14 @@ const NG_BANKS = [
   { code: '057',    name: 'Zenith Bank' },
 ].sort((a, b) => a.name.localeCompare(b.name));
 
+type Direction = 'CAD_NGN' | 'NGN_CAD';
+
 // ── Types ──────────────────────────────────────────────────────────────────
 interface Quote {
   from: string;
   to: string;
+  source_amount: number;
+  converted_amount: number;
   cad_amount: number;
   ngn_amount: number;
   raw_rate: number;
@@ -44,11 +48,15 @@ interface Quote {
 
 interface SendOrder {
   order_id: string;
-  status: 'awaiting_payment' | 'cad_received' | 'payout_initiated' | 'completed' | 'failed' | 'expired';
+  direction?: Direction;
+  status: 'awaiting_payment' | 'cad_received' | 'ngn_received' | 'payout_initiated' | 'completed' | 'failed' | 'expired';
   cad_amount: number;
   ngn_amount: number;
   customer_rate: number;
-  recipient_name: string;
+  recipient_name?: string;
+  va_account_number?: string;
+  va_account_name?: string;
+  va_bank_name?: string;
   created_at: string;
   expires_at: string;
   completed_at?: string;
@@ -56,11 +64,21 @@ interface SendOrder {
   payout_status?: string;
 }
 
-interface Instructions {
+interface CadNgnInstructions {
   method: string;
   send_from_email: string;
   send_to_email: string;
   amount_cad: number;
+  reference: string;
+  note: string;
+}
+
+interface NgnCadInstructions {
+  method: string;
+  account_number: string;
+  account_name: string;
+  bank_name: string;
+  amount_ngn: number;
   reference: string;
   note: string;
 }
@@ -78,6 +96,7 @@ type Step =
 export default function Send() {
   const navigate = useNavigate();
 
+  const [direction,      setDirection]     = useState<Direction>('CAD_NGN');
   const [step,           setStep]          = useState<Step>('amount');
   const [ngnInput,       setNgnInput]      = useState('');
   const [quote,          setQuote]         = useState<Quote | null>(null);
@@ -99,30 +118,38 @@ export default function Send() {
   const [pinError,  setPinError]  = useState('');
   const [initiating, setInitiating] = useState(false);
 
-  const [orderId,       setOrderId]      = useState('');
-  const [instructions,  setInstructions] = useState<Instructions | null>(null);
-  const [order,         setOrder]        = useState<SendOrder | null>(null);
-  const [countdown,     setCountdown]    = useState(0);
+  const [orderId,            setOrderId]           = useState('');
+  const [cadNgnInstructions, setCadNgnInstructions] = useState<CadNgnInstructions | null>(null);
+  const [ngnCadInstructions, setNgnCadInstructions] = useState<NgnCadInstructions | null>(null);
+  const [order,              setOrder]              = useState<SendOrder | null>(null);
+  const [countdown,          setCountdown]          = useState(0);
 
   const pollRef      = useRef<ReturnType<typeof setInterval> | null>(null);
   const countdownRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // ── Quote fetch ────────────────────────────────────────────────────────
-  const fetchQuote = useCallback(async (ngn: number) => {
-    if (!ngn || ngn <= 0) return;
+  const fetchQuote = useCallback(async (amount: number, dir: Direction) => {
+    if (!amount || amount <= 0) return;
     setQuoteLoading(true);
     setQuoteError('');
     try {
-      // Quote endpoint takes CAD amount; we send 1 CAD to get the rate, then compute
-      const { data } = await api.get('/me/send/quote', { params: { amount: 1 } });
-      const rate: number = data.customer_rate;
-      const cad = parseFloat((ngn / rate).toFixed(2));
+      const from = dir === 'CAD_NGN' ? 'NGN' : 'NGN'; // user always enters NGN amount
+      // For CAD→NGN: user enters NGN, we fetch NGN→CAD rate to compute CAD cost
+      // For NGN→CAD: user enters NGN, same — show CAD they'll receive
+      const params = dir === 'CAD_NGN'
+        ? { amount, from: 'NGN', to: 'CAD' }  // how much CAD does this NGN cost?
+        : { amount, from: 'NGN', to: 'CAD' };  // how much CAD will this NGN produce?
+      const { data } = await api.get('/me/send/quote', { params });
       setQuote({
-        from: 'CAD', to: 'NGN',
-        ngn_amount: ngn, cad_amount: cad,
-        raw_rate: data.raw_rate, customer_rate: rate,
+        from, to: 'CAD',
+        source_amount: amount,
+        converted_amount: data.converted_amount,
+        ngn_amount: amount,
+        cad_amount: data.converted_amount,
+        raw_rate: data.raw_rate,
+        customer_rate: data.customer_rate,
         spread_pct: data.spread_pct,
-        expires_at: new Date(Date.now() + 30 * 60 * 1000).toISOString(),
+        expires_at: data.expires_at,
       });
     } catch {
       setQuoteError('Could not fetch rate. Check connection.');
@@ -137,19 +164,19 @@ export default function Send() {
     const ngn = parseFloat(ngnInput);
     if (!ngn || ngn <= 0) { setQuote(null); return; }
     if (debounceRef.current) clearTimeout(debounceRef.current);
-    debounceRef.current = setTimeout(() => fetchQuote(ngn), 600);
+    debounceRef.current = setTimeout(() => fetchQuote(ngn, direction), 600);
     return () => { if (debounceRef.current) clearTimeout(debounceRef.current); };
-  }, [ngnInput, fetchQuote]);
+  }, [ngnInput, direction, fetchQuote]);
 
   // Auto-refresh rate every 25 seconds while on amount screen
   useEffect(() => {
     if (step !== 'amount') return;
     const interval = setInterval(() => {
       const ngn = parseFloat(ngnInput);
-      if (ngn > 0) fetchQuote(ngn);
+      if (ngn > 0) fetchQuote(ngn, direction);
     }, 25_000);
     return () => clearInterval(interval);
-  }, [step, ngnInput, fetchQuote]);
+  }, [step, ngnInput, direction, fetchQuote]);
 
   // ── Load verified emails ───────────────────────────────────────────────
   useEffect(() => {
@@ -199,12 +226,37 @@ export default function Send() {
     if (debounceRef.current)  clearTimeout(debounceRef.current);
   }, []);
 
+  // ── Direction switch — resets form ────────────────────────────────────
+  function switchDirection(dir: Direction) {
+    setDirection(dir);
+    setStep('amount');
+    setNgnInput('');
+    setQuote(null);
+    setQuoteError('');
+    setRecipientAccount('');
+    setBankCode(NG_BANKS[0].code);
+    setRecipientName('');
+    setSenderEmail('');
+    setOtp('');
+    setOrderId('');
+    setCadNgnInstructions(null);
+    setNgnCadInstructions(null);
+    setOrder(null);
+    if (pollRef.current)      clearInterval(pollRef.current);
+    if (countdownRef.current) clearInterval(countdownRef.current);
+  }
+
   // ── Handlers ───────────────────────────────────────────────────────────
   function goToRecipient() {
     const ngn = parseFloat(ngnInput);
     if (!ngn || ngn < 100) return toast('Enter at least ₦100', 'err');
     if (!quote)            return toast('Wait for rate to load', 'err');
-    setStep('recipient');
+    if (direction === 'NGN_CAD') {
+      // NGN→CAD: no recipient needed, go straight to PIN
+      setStep('pin');
+    } else {
+      setStep('recipient');
+    }
   }
 
   function goToEmailCheck() {
@@ -254,8 +306,21 @@ export default function Send() {
     setInitiating(true);
     setPinError('');
     try {
-      const bank = NG_BANKS.find(b => b.code === bankCode)!;
       const ngn = parseFloat(ngnInput);
+
+      if (direction === 'NGN_CAD') {
+        // NGN→CAD: initiate receive order
+        const { data } = await api.post('/me/send/receive', { ngn_amount: ngn, pin });
+        setOrderId(data.order_id);
+        setNgnCadInstructions(data.instructions);
+        setShowPin(false);
+        setStep('instructions');
+        startCountdown(data.expires_at);
+        return;
+      }
+
+      // CAD→NGN: existing flow
+      const bank = NG_BANKS.find(b => b.code === bankCode)!;
       const { data } = await api.post('/me/send/initiate', {
         ngn_amount: ngn,
         sender_email: senderEmail,
@@ -266,7 +331,7 @@ export default function Send() {
         pin,
       });
       setOrderId(data.order_id);
-      setInstructions(data.instructions);
+      setCadNgnInstructions(data.instructions);
       setShowPin(false);
       setStep('instructions');
       startCountdown(data.expires_at);
@@ -298,7 +363,8 @@ export default function Send() {
     setSenderEmail('');
     setOtp('');
     setOrderId('');
-    setInstructions(null);
+    setCadNgnInstructions(null);
+    setNgnCadInstructions(null);
     setOrder(null);
     if (pollRef.current)      clearInterval(pollRef.current);
     if (countdownRef.current) clearInterval(countdownRef.current);
@@ -328,12 +394,35 @@ export default function Send() {
     recipient:     'amount',
     'email-check': 'recipient',
     otp:           'email-check',
-    pin:           'email-check',
+    pin:           direction === 'NGN_CAD' ? 'amount' : 'email-check',
   };
 
   // ── Render ─────────────────────────────────────────────────────────────
   return (
     <div style={{ maxWidth: 480 }}>
+
+      {/* ── Direction toggle (shown on amount step only) ── */}
+      {step === 'amount' && (
+        <div style={{
+          display: 'flex', borderRadius: 12, overflow: 'hidden',
+          border: '1px solid var(--border)', marginBottom: '1.4rem',
+        }}>
+          {([['CAD_NGN', '🇨🇦 Send CAD → NGN 🇳🇬'], ['NGN_CAD', '🇳🇬 Receive NGN → CAD 🇨🇦']] as [Direction, string][]).map(([dir, label]) => (
+            <button
+              key={dir}
+              onClick={() => switchDirection(dir)}
+              style={{
+                flex: 1, padding: '.7rem .5rem', border: 'none', cursor: 'pointer',
+                fontWeight: 600, fontSize: '.78rem', transition: 'background .15s, color .15s',
+                background: direction === dir ? 'var(--accent)' : 'var(--surface)',
+                color: direction === dir ? '#fff' : 'var(--muted)',
+              }}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      )}
 
       {/* ── Header ── */}
       <div style={{ display: 'flex', alignItems: 'center', gap: '.8rem', marginBottom: '1.6rem' }}>
@@ -344,12 +433,12 @@ export default function Send() {
           >←</button>
         )}
         <h1 style={{ fontSize: '1.4rem', fontWeight: 700, margin: 0 }}>
-          {step === 'amount'       && 'Send to Nigeria'}
+          {step === 'amount'       && (direction === 'CAD_NGN' ? 'Send to Nigeria' : 'Receive from Nigeria')}
           {step === 'recipient'    && 'Recipient Details'}
           {step === 'email-check'  && 'Your Interac Email'}
           {step === 'otp'          && 'Verify Email'}
           {step === 'pin'          && 'Confirm Transfer'}
-          {step === 'instructions' && 'Payment Instructions'}
+          {step === 'instructions' && (direction === 'CAD_NGN' ? 'Send via Interac' : 'Nigerian Bank Details')}
           {step === 'tracking'     && 'Transfer Status'}
         </h1>
       </div>
@@ -362,7 +451,7 @@ export default function Send() {
           {/* NGN input */}
           <div className="card" style={{ marginBottom: '1rem' }}>
             <label style={{ fontSize: '.78rem', color: 'var(--muted)', fontWeight: 600, marginBottom: '.4rem', display: 'block' }}>
-              AMOUNT RECIPIENT RECEIVES
+              {direction === 'CAD_NGN' ? 'AMOUNT RECIPIENT RECEIVES (NGN)' : 'AMOUNT TO RECEIVE FROM NIGERIA (NGN)'}
             </label>
             <div style={{ display: 'flex', alignItems: 'center', gap: '.5rem' }}>
               <span style={{ fontSize: '1.6rem', fontWeight: 700, color: 'var(--muted)' }}>₦</span>
@@ -399,9 +488,11 @@ export default function Send() {
 
           {quote && !quoteLoading && (
             <div className="card" style={{ marginBottom: '1rem' }}>
-              {/* You pay */}
+              {/* You pay / you receive */}
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '.8rem' }}>
-                <span style={{ color: 'var(--muted)', fontSize: '.85rem' }}>You send (via Interac)</span>
+                <span style={{ color: 'var(--muted)', fontSize: '.85rem' }}>
+                  {direction === 'CAD_NGN' ? 'You send (via Interac)' : 'You receive (to CAD wallet)'}
+                </span>
                 <span style={{ fontWeight: 700, fontSize: '1.1rem' }}>{fmtCAD(quote.cad_amount)}</span>
               </div>
               {/* Rate row */}
@@ -413,7 +504,11 @@ export default function Send() {
                 display: 'flex', justifyContent: 'space-between', alignItems: 'center',
               }}>
                 <span style={{ fontSize: '.82rem', color: 'var(--accent2)', fontWeight: 600 }}>Rate</span>
-                <span style={{ fontSize: '.88rem', fontWeight: 700 }}>1 CAD = {fmtRate(quote.customer_rate)} NGN</span>
+                <span style={{ fontSize: '.88rem', fontWeight: 700 }}>
+                  {direction === 'CAD_NGN'
+                    ? `1 CAD = ${fmtRate(quote.customer_rate)} NGN`
+                    : `₦1,000 = ${fmtCAD(1000 * quote.customer_rate)}`}
+                </span>
               </div>
               <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '.7rem' }}>
                 <span style={{ color: 'var(--muted)', fontSize: '.78rem' }}>Spread</span>
@@ -619,14 +714,25 @@ export default function Send() {
           <div className="card" style={{ marginBottom: '1rem' }}>
             <h3 style={{ fontSize: '.95rem', marginBottom: '1.2rem', color: 'var(--muted)' }}>Review Transfer</h3>
 
-            <InfoRow label="You pay"         value={quote ? fmtCAD(quote.cad_amount) : '—'} />
-            <InfoRow label="Recipient gets"  value={fmtNGN(parseFloat(ngnInput))} />
-            <InfoRow label="Rate"            value={quote ? `1 CAD = ${fmtRate(quote.customer_rate)} NGN` : '—'} />
-            <InfoRow label="Bank"            value={NG_BANKS.find(b => b.code === bankCode)?.name ?? bankCode} />
-            <InfoRow label="Account number"  value={recipientAccount} mono />
-            <InfoRow label="Account name"    value={recipientName} />
-            <InfoRow label="Sending from"    value={senderEmail} />
-            <InfoRow label="Method"          value="Interac e-Transfer" last />
+            {direction === 'CAD_NGN' ? (
+              <>
+                <InfoRow label="You pay"         value={quote ? fmtCAD(quote.cad_amount) : '—'} />
+                <InfoRow label="Recipient gets"  value={fmtNGN(parseFloat(ngnInput))} />
+                <InfoRow label="Rate"            value={quote ? `1 CAD = ${fmtRate(quote.customer_rate)} NGN` : '—'} />
+                <InfoRow label="Bank"            value={NG_BANKS.find(b => b.code === bankCode)?.name ?? bankCode} />
+                <InfoRow label="Account number"  value={recipientAccount} mono />
+                <InfoRow label="Account name"    value={recipientName} />
+                <InfoRow label="Sending from"    value={senderEmail} />
+                <InfoRow label="Method"          value="Interac e-Transfer" last />
+              </>
+            ) : (
+              <>
+                <InfoRow label="NGN amount"    value={fmtNGN(parseFloat(ngnInput))} />
+                <InfoRow label="You receive"   value={quote ? fmtCAD(quote.cad_amount) : '—'} />
+                <InfoRow label="Rate"          value={quote ? `₦1,000 = ${fmtCAD(1000 * quote.customer_rate)}` : '—'} />
+                <InfoRow label="Credited to"   value="Your CAD wallet" last />
+              </>
+            )}
           </div>
 
           <button
@@ -652,7 +758,7 @@ export default function Send() {
       {/* ══════════════════════════════════════════════════════════════
           STEP 6 — Payment Instructions
       ══════════════════════════════════════════════════════════════ */}
-      {step === 'instructions' && instructions && (
+      {step === 'instructions' && (cadNgnInstructions || ngnCadInstructions) && (
         <div>
           {/* Rate lock countdown */}
           <div style={{
@@ -675,50 +781,45 @@ export default function Send() {
             )}
           </div>
 
-          {/* Instructions card */}
-          <div className="card" style={{ marginBottom: '1rem' }}>
-            <div style={{ fontSize: '.78rem', fontWeight: 700, color: 'var(--accent2)', marginBottom: '1rem', letterSpacing: '.05em' }}>
-              INTERAC E-TRANSFER INSTRUCTIONS
+          {/* Instructions card — CAD→NGN */}
+          {cadNgnInstructions && (
+            <div className="card" style={{ marginBottom: '1rem' }}>
+              <div style={{ fontSize: '.78rem', fontWeight: 700, color: 'var(--accent2)', marginBottom: '1rem', letterSpacing: '.05em' }}>
+                INTERAC E-TRANSFER INSTRUCTIONS
+              </div>
+              <InstructionRow label="Send to"            value={cadNgnInstructions.send_to_email}                  onCopy={() => copyText(cadNgnInstructions.send_to_email, 'Email')} />
+              <InstructionRow label="Amount"             value={`CAD ${cadNgnInstructions.amount_cad.toFixed(2)}`} onCopy={() => copyText(cadNgnInstructions.amount_cad.toFixed(2), 'Amount')} highlight />
+              <InstructionRow label="Reference / Message" value={cadNgnInstructions.reference}                     onCopy={() => copyText(cadNgnInstructions.reference, 'Reference')} mono />
+              <InstructionRow label="Send from"          value={cadNgnInstructions.send_from_email}                last />
+              <div style={{ marginTop: '1rem', padding: '.8rem 1rem', background: 'rgba(245,158,11,.06)', border: '1px solid rgba(245,158,11,.2)', borderRadius: 10, fontSize: '.8rem', color: 'var(--warn)', lineHeight: 1.5 }}>
+                ⚠️ Send <strong>exactly</strong> CAD {cadNgnInstructions.amount_cad.toFixed(2)}. Wrong amounts delay your transfer. Include the reference in the message field.
+              </div>
             </div>
+          )}
 
-            <InstructionRow
-              label="Send to"
-              value={instructions.send_to_email}
-              onCopy={() => copyText(instructions.send_to_email, 'Email')}
-            />
-            <InstructionRow
-              label="Amount"
-              value={`CAD ${instructions.amount_cad.toFixed(2)}`}
-              onCopy={() => copyText(instructions.amount_cad.toFixed(2), 'Amount')}
-              highlight
-            />
-            <InstructionRow
-              label="Reference / Message"
-              value={instructions.reference}
-              onCopy={() => copyText(instructions.reference, 'Reference')}
-              mono
-            />
-            <InstructionRow
-              label="Send from"
-              value={instructions.send_from_email}
-              last
-            />
-
-            <div style={{
-              marginTop: '1rem', padding: '.8rem 1rem',
-              background: 'rgba(245,158,11,.06)', border: '1px solid rgba(245,158,11,.2)',
-              borderRadius: 10, fontSize: '.8rem', color: 'var(--warn)', lineHeight: 1.5,
-            }}>
-              ⚠️ Send <strong>exactly</strong> CAD {instructions.amount_cad.toFixed(2)}. Wrong amounts delay your transfer. Include the reference in the message field.
+          {/* Instructions card — NGN→CAD */}
+          {ngnCadInstructions && (
+            <div className="card" style={{ marginBottom: '1rem' }}>
+              <div style={{ fontSize: '.78rem', fontWeight: 700, color: 'var(--accent2)', marginBottom: '1rem', letterSpacing: '.05em' }}>
+                NIGERIAN BANK TRANSFER — SHARE WITH SENDER
+              </div>
+              <InstructionRow label="Bank"           value={ngnCadInstructions.bank_name}                                         onCopy={() => copyText(ngnCadInstructions.bank_name, 'Bank')} />
+              <InstructionRow label="Account Number" value={ngnCadInstructions.account_number}                                    onCopy={() => copyText(ngnCadInstructions.account_number, 'Account Number')} highlight mono />
+              <InstructionRow label="Account Name"   value={ngnCadInstructions.account_name}                                      onCopy={() => copyText(ngnCadInstructions.account_name, 'Account Name')} />
+              <InstructionRow label="Amount"         value={fmtNGN(ngnCadInstructions.amount_ngn)}                                onCopy={() => copyText(String(ngnCadInstructions.amount_ngn), 'Amount')} />
+              <InstructionRow label="Reference"      value={ngnCadInstructions.reference}                                        onCopy={() => copyText(ngnCadInstructions.reference, 'Reference')} mono last />
+              <div style={{ marginTop: '1rem', padding: '.8rem 1rem', background: 'rgba(16,217,178,.06)', border: '1px solid rgba(16,217,178,.2)', borderRadius: 10, fontSize: '.8rem', color: 'var(--accent2)', lineHeight: 1.5 }}>
+                Share these details with the person sending from Nigeria. Once they transfer, your CAD will appear in your wallet automatically.
+              </div>
             </div>
-          </div>
+          )}
 
           <button
             className="btn btn-primary"
             style={{ width: '100%', marginBottom: '.6rem' }}
             onClick={goToTracking}
           >
-            I've sent the Interac — Track Transfer →
+            {cadNgnInstructions ? "I've sent the Interac — Track →" : "Waiting for Nigerian Transfer — Track →"}
           </button>
           <button className="btn btn-ghost" style={{ width: '100%' }} onClick={reset}>
             Cancel & Start Over
@@ -739,11 +840,21 @@ export default function Send() {
           {/* Details */}
           {order && (
             <div className="card" style={{ marginBottom: '1rem' }}>
-              <InfoRow label="Order ID"       value={order.order_id} mono />
-              <InfoRow label="You paid"        value={fmtCAD(order.cad_amount)} />
-              <InfoRow label="Recipient gets"  value={fmtNGN(order.ngn_amount)} />
-              <InfoRow label="Account"         value={recipientAccount} mono />
-              <InfoRow label="Account name"    value={recipientName} last />
+              <InfoRow label="Order ID" value={order.order_id} mono />
+              {order.direction === 'NGN_CAD' ? (
+                <>
+                  <InfoRow label="NGN sent"     value={fmtNGN(order.ngn_amount)} />
+                  <InfoRow label="CAD credited"  value={fmtCAD(order.cad_amount)} />
+                  <InfoRow label="Credited to"   value="Your CAD wallet" last />
+                </>
+              ) : (
+                <>
+                  <InfoRow label="You paid"       value={fmtCAD(order.cad_amount)} />
+                  <InfoRow label="Recipient gets"  value={fmtNGN(order.ngn_amount)} />
+                  <InfoRow label="Account"         value={recipientAccount} mono />
+                  <InfoRow label="Account name"    value={order.recipient_name ?? recipientName} last />
+                </>
+              )}
             </div>
           )}
 
@@ -826,15 +937,16 @@ function InstructionRow({
   );
 }
 
-type OrderStatus = 'awaiting_payment' | 'cad_received' | 'payout_initiated' | 'completed' | 'failed' | 'expired';
+type OrderStatus = 'awaiting_payment' | 'cad_received' | 'ngn_received' | 'payout_initiated' | 'completed' | 'failed' | 'expired';
 
 const STATUS_CONFIG: Record<OrderStatus, { icon: string; label: string; sub: string; color: string }> = {
-  awaiting_payment:  { icon: '⏳', label: 'Waiting for your Interac',   sub: 'Send your Interac e-Transfer now.',              color: 'var(--warn)' },
-  cad_received:      { icon: '✅', label: 'Payment received',            sub: 'Converting and sending to recipient…',           color: 'var(--accent2)' },
-  payout_initiated:  { icon: '🚀', label: 'Sending to recipient',        sub: 'Funds are on the way to the bank account.',      color: 'var(--accent2)' },
-  completed:         { icon: '🎉', label: 'Transfer complete!',          sub: "Funds delivered to the recipient's account.",   color: 'var(--accent2)' },
+  awaiting_payment:  { icon: '⏳', label: 'Waiting for payment',         sub: 'Send money using the instructions above.',      color: 'var(--warn)' },
+  cad_received:      { icon: '✅', label: 'CAD received',                sub: 'Converting and sending to recipient…',           color: 'var(--accent2)' },
+  ngn_received:      { icon: '✅', label: 'NGN received',                sub: 'Exchanging to CAD and crediting your wallet…',   color: 'var(--accent2)' },
+  payout_initiated:  { icon: '🚀', label: 'Processing',                  sub: 'Funds are on the way.',                          color: 'var(--accent2)' },
+  completed:         { icon: '🎉', label: 'Transfer complete!',          sub: "Funds delivered successfully.",                  color: 'var(--accent2)' },
   failed:            { icon: '❌', label: 'Transfer failed',             sub: 'Something went wrong. Contact support.',         color: 'var(--danger)' },
-  expired:           { icon: '⌛', label: 'Rate expired',               sub: "You didn't send in time. Start a new transfer.", color: 'var(--muted)' },
+  expired:           { icon: '⌛', label: 'Rate expired',               sub: "Transfer window closed. Start a new one.",       color: 'var(--muted)' },
 };
 
 function StatusDisplay({ order }: { order: SendOrder | null }) {
@@ -863,13 +975,13 @@ function StatusDisplay({ order }: { order: SendOrder | null }) {
       {/* Progress dots */}
       {!['failed', 'expired'].includes(order.status) && (
         <div style={{ display: 'flex', gap: '.5rem', justifyContent: 'center', marginTop: '1.2rem' }}>
-          {(['awaiting_payment', 'cad_received', 'payout_initiated', 'completed'] as OrderStatus[]).map(s => (
+          {(['awaiting_payment', 'payout_initiated', 'completed'] as OrderStatus[]).map(s => (
             <div
               key={s}
               style={{
                 width: 8, height: 8, borderRadius: '50%',
-                background: (['awaiting_payment', 'cad_received', 'payout_initiated', 'completed'] as OrderStatus[]).indexOf(s)
-                  <= (['awaiting_payment', 'cad_received', 'payout_initiated', 'completed'] as OrderStatus[]).indexOf(order.status)
+                background: (['awaiting_payment', 'payout_initiated', 'completed'] as OrderStatus[]).indexOf(s)
+                  <= (['awaiting_payment', 'cad_received', 'ngn_received', 'payout_initiated', 'completed'] as OrderStatus[]).indexOf(order.status)
                   ? cfg.color : 'var(--border)',
                 transition: 'background .3s',
               }}
