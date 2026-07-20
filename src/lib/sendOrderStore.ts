@@ -108,17 +108,18 @@ export async function updateSendOrderStatus(
   }));
 }
 
-// Find orders awaiting payment for a given RemitClick customer — used in deposit webhook matching
+// Find pending CAD→NGN orders for a customer (Interac CAD deposit webhook matching)
 export async function getPendingOrderForCustomer(rcCustomerId: string): Promise<SendOrder | null> {
   const res = await db.send(new QueryCommand({
     TableName: TABLE,
     IndexName: 'rc-customer-status-index',
     KeyConditionExpression: 'rc_customer_id = :cid',
-    FilterExpression: '#st = :st AND expires_at > :now',
-    ExpressionAttributeNames: { '#st': 'status' },
+    FilterExpression: '#st = :st AND #dir = :dir AND expires_at > :now',
+    ExpressionAttributeNames: { '#st': 'status', '#dir': 'direction' },
     ExpressionAttributeValues: {
       ':cid': rcCustomerId,
       ':st': 'awaiting_payment',
+      ':dir': 'CAD_NGN',
       ':now': new Date().toISOString(),
     },
     Limit: 1,
