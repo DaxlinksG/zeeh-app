@@ -4,7 +4,16 @@ import api from '../lib/api';
 import { toast } from '../components/Toast';
 import { PinModal } from '../components/PinModal';
 
-// ── Nigerian banks ─────────────────────────────────────────────────────────
+// ── Currency config (add entries here to support new corridors) ─────────────
+const CURRENCIES = ['CAD', 'NGN'] as const;
+type Currency = typeof CURRENCIES[number];
+
+const CURRENCY_META: Record<Currency, { flag: string; symbol: string }> = {
+  CAD: { flag: '🇨🇦', symbol: 'CA$' },
+  NGN: { flag: '🇳🇬', symbol: '₦'  },
+};
+
+// ── Nigerian banks ──────────────────────────────────────────────────────────
 const NG_BANKS = [
   { code: '044',    name: 'Access Bank' },
   { code: '050',    name: 'Ecobank Nigeria' },
@@ -32,16 +41,17 @@ const NG_BANKS = [
 
 type Direction = 'CAD_NGN' | 'NGN_CAD';
 
-// ── Types ──────────────────────────────────────────────────────────────────
+// ── Types ───────────────────────────────────────────────────────────────────
 interface Quote {
-  from: string;
-  to: string;
+  from: Currency;
+  to: Currency;
   source_amount: number;
   converted_amount: number;
   cad_amount: number;
   ngn_amount: number;
   raw_rate: number;
   customer_rate: number;
+  rate_ngn_per_cad: number; // always NGN per 1 CAD, for rate display
   spread_pct: number;
   expires_at: string;
 }
@@ -83,22 +93,46 @@ interface NgnCadInstructions {
   note: string;
 }
 
-type Step =
-  | 'amount'
-  | 'recipient'
-  | 'email-check'
-  | 'otp'
-  | 'pin'
-  | 'instructions'
-  | 'tracking';
+type Step = 'amount' | 'recipient' | 'email-check' | 'otp' | 'pin' | 'instructions' | 'tracking';
 
-// ── Component ──────────────────────────────────────────────────────────────
+// ── Amount input helpers ────────────────────────────────────────────────────
+
+// Parse a comma-formatted input string to a number
+function parseNum(s: string): number {
+  return parseFloat(s.replace(/,/g, '')) || 0;
+}
+
+// Format a raw string as a typed amount (adds commas, limits decimals)
+function fmtInput(raw: string, currency: Currency): string {
+  const stripped = raw.replace(/[^0-9.]/g, '');
+  if (!stripped) return '';
+  const [intRaw, ...decParts] = stripped.split('.');
+  const intFormatted = intRaw.replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+  if (currency === 'NGN') return intFormatted;
+  if (decParts.length > 0) return `${intFormatted}.${decParts.join('').slice(0, 2)}`;
+  return intFormatted;
+}
+
+// Format a computed number back to an input string
+function numToInput(n: number, currency: Currency): string {
+  if (!n || n <= 0) return '';
+  if (currency === 'NGN') return Math.round(n).toLocaleString('en-US');
+  return n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+// ── Component ───────────────────────────────────────────────────────────────
 export default function Send() {
   const navigate = useNavigate();
 
-  const [direction,      setDirection]     = useState<Direction>('CAD_NGN');
+  // ── Currency / amount ─────────────────────────────────────────────────
+  const [sendCurrency,    setSendCurrency]    = useState<Currency>('CAD');
+  const [receiveCurrency, setReceiveCurrency] = useState<Currency>('NGN');
+  const [sendInput,       setSendInput]       = useState('');
+  const [receiveInput,    setReceiveInput]    = useState('');
+  const [lastEdited,      setLastEdited]      = useState<'send' | 'receive'>('send');
+
+  // ── Wizard ────────────────────────────────────────────────────────────
   const [step,           setStep]          = useState<Step>('amount');
-  const [ngnInput,       setNgnInput]      = useState('');
   const [quote,          setQuote]         = useState<Quote | null>(null);
   const [quoteLoading,   setQuoteLoading]  = useState(false);
   const [quoteError,     setQuoteError]    = useState('');
@@ -114,43 +148,52 @@ export default function Send() {
   const [otp,        setOtp]       = useState('');
   const [otpLoading, setOtpLoading] = useState(false);
 
-  const [showPin,   setShowPin]   = useState(false);
-  const [pinError,  setPinError]  = useState('');
+  const [showPin,    setShowPin]    = useState(false);
+  const [pinError,   setPinError]   = useState('');
   const [initiating, setInitiating] = useState(false);
 
-  const [orderId,            setOrderId]           = useState('');
-  const [cadNgnInstructions, setCadNgnInstructions] = useState<CadNgnInstructions | null>(null);
-  const [ngnCadInstructions, setNgnCadInstructions] = useState<NgnCadInstructions | null>(null);
-  const [order,              setOrder]              = useState<SendOrder | null>(null);
-  const [countdown,          setCountdown]          = useState(0);
+  const [orderId,            setOrderId]            = useState('');
+  const [cadNgnInstructions, setCadNgnInstructions]  = useState<CadNgnInstructions | null>(null);
+  const [ngnCadInstructions, setNgnCadInstructions]  = useState<NgnCadInstructions | null>(null);
+  const [order,              setOrder]               = useState<SendOrder | null>(null);
+  const [countdown,          setCountdown]           = useState(0);
 
   const pollRef      = useRef<ReturnType<typeof setInterval> | null>(null);
   const countdownRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const debounceRef  = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // ── Quote fetch ────────────────────────────────────────────────────────
-  const fetchQuote = useCallback(async (amount: number, dir: Direction) => {
+  // ── Derived values ────────────────────────────────────────────────────
+  const direction: Direction = sendCurrency === 'CAD' ? 'CAD_NGN' : 'NGN_CAD';
+  const sendAmount    = parseNum(sendInput);
+  const receiveAmount = parseNum(receiveInput);
+  const ngnAmount = sendCurrency === 'NGN' ? sendAmount : receiveAmount;
+  const cadAmount = sendCurrency === 'CAD' ? sendAmount : receiveAmount;
+
+  // ── Quote fetch ───────────────────────────────────────────────────────
+  const fetchQuote = useCallback(async (
+    amount: number, from: Currency, to: Currency, updateField: 'send' | 'receive',
+  ) => {
     if (!amount || amount <= 0) return;
     setQuoteLoading(true);
     setQuoteError('');
     try {
-      const from = dir === 'CAD_NGN' ? 'NGN' : 'NGN'; // user always enters NGN amount
-      // For CAD→NGN: user enters NGN, we fetch NGN→CAD rate to compute CAD cost
-      // For NGN→CAD: user enters NGN, same — show CAD they'll receive
-      const params = dir === 'CAD_NGN'
-        ? { amount, from: 'NGN', to: 'CAD' }  // how much CAD does this NGN cost?
-        : { amount, from: 'NGN', to: 'CAD' };  // how much CAD will this NGN produce?
-      const { data } = await api.get('/me/send/quote', { params });
+      const { data } = await api.get('/me/send/quote', { params: { amount, from, to } });
+      const rateNgnPerCad = from === 'CAD' ? data.customer_rate : 1 / data.customer_rate;
       setQuote({
-        from, to: 'CAD',
+        from, to,
         source_amount: amount,
         converted_amount: data.converted_amount,
-        ngn_amount: amount,
-        cad_amount: data.converted_amount,
+        cad_amount: data.cad_amount,
+        ngn_amount: data.ngn_amount,
         raw_rate: data.raw_rate,
         customer_rate: data.customer_rate,
+        rate_ngn_per_cad: rateNgnPerCad,
         spread_pct: data.spread_pct,
         expires_at: data.expires_at,
       });
+      const computed = numToInput(data.converted_amount, to);
+      if (updateField === 'receive') setReceiveInput(computed);
+      else setSendInput(computed);
     } catch {
       setQuoteError('Could not fetch rate. Check connection.');
     } finally {
@@ -158,33 +201,48 @@ export default function Send() {
     }
   }, []);
 
-  // Debounce quote fetching as user types
-  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Debounce: user typed in "You Send" — compute "Receiver Gets"
   useEffect(() => {
-    const ngn = parseFloat(ngnInput);
-    if (!ngn || ngn <= 0) { setQuote(null); return; }
+    if (lastEdited !== 'send') return;
+    const amt = parseNum(sendInput);
+    if (amt <= 0) { setQuote(null); setReceiveInput(''); return; }
     if (debounceRef.current) clearTimeout(debounceRef.current);
-    debounceRef.current = setTimeout(() => fetchQuote(ngn, direction), 600);
+    debounceRef.current = setTimeout(() => fetchQuote(amt, sendCurrency, receiveCurrency, 'receive'), 600);
     return () => { if (debounceRef.current) clearTimeout(debounceRef.current); };
-  }, [ngnInput, direction, fetchQuote]);
+  }, [sendInput, lastEdited, sendCurrency, receiveCurrency, fetchQuote]);
 
-  // Auto-refresh rate every 25 seconds while on amount screen
+  // Debounce: user typed in "Receiver Gets" — compute "You Send"
+  useEffect(() => {
+    if (lastEdited !== 'receive') return;
+    const amt = parseNum(receiveInput);
+    if (amt <= 0) { setQuote(null); setSendInput(''); return; }
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(() => fetchQuote(amt, receiveCurrency, sendCurrency, 'send'), 600);
+    return () => { if (debounceRef.current) clearTimeout(debounceRef.current); };
+  }, [receiveInput, lastEdited, receiveCurrency, sendCurrency, fetchQuote]);
+
+  // Auto-refresh rate every 25 seconds on amount screen
   useEffect(() => {
     if (step !== 'amount') return;
     const interval = setInterval(() => {
-      const ngn = parseFloat(ngnInput);
-      if (ngn > 0) fetchQuote(ngn, direction);
+      if (lastEdited === 'send') {
+        const amt = parseNum(sendInput);
+        if (amt > 0) fetchQuote(amt, sendCurrency, receiveCurrency, 'receive');
+      } else {
+        const amt = parseNum(receiveInput);
+        if (amt > 0) fetchQuote(amt, receiveCurrency, sendCurrency, 'send');
+      }
     }, 25_000);
     return () => clearInterval(interval);
-  }, [step, ngnInput, direction, fetchQuote]);
+  }, [step, sendInput, receiveInput, lastEdited, sendCurrency, receiveCurrency, fetchQuote]);
 
-  // ── Load verified emails ───────────────────────────────────────────────
+  // ── Load verified emails ──────────────────────────────────────────────
   useEffect(() => {
     if (step !== 'email-check') return;
     api.get('/me/send/emails')
       .then(r => {
         const ready = (r.data.emails ?? [])
-          .filter((e: { status: string; email: string }) => e.status === 'ready')
+          .filter((e: { status: string }) => e.status === 'ready')
           .map((e: { email: string }) => e.email);
         setVerifiedEmails(ready);
         if (ready.length > 0) setSenderEmail(ready[0]);
@@ -192,7 +250,7 @@ export default function Send() {
       .catch(() => {});
   }, [step]);
 
-  // ── Countdown timer ────────────────────────────────────────────────────
+  // ── Countdown timer ───────────────────────────────────────────────────
   const startCountdown = useCallback((expiresAt: string) => {
     if (countdownRef.current) clearInterval(countdownRef.current);
     const tick = () => {
@@ -204,16 +262,14 @@ export default function Send() {
     countdownRef.current = setInterval(tick, 1000);
   }, []);
 
-  // ── Poll order status ──────────────────────────────────────────────────
+  // ── Poll order status ─────────────────────────────────────────────────
   const startPolling = useCallback((id: string) => {
     if (pollRef.current) clearInterval(pollRef.current);
     const poll = async () => {
       try {
         const { data } = await api.get(`/me/send/${id}`);
         setOrder(data);
-        if (['completed', 'failed', 'expired'].includes(data.status)) {
-          clearInterval(pollRef.current!);
-        }
+        if (['completed', 'failed', 'expired'].includes(data.status)) clearInterval(pollRef.current!);
       } catch {}
     };
     poll();
@@ -226,11 +282,24 @@ export default function Send() {
     if (debounceRef.current)  clearTimeout(debounceRef.current);
   }, []);
 
-  // ── Direction switch — resets form ────────────────────────────────────
-  function switchDirection(dir: Direction) {
-    setDirection(dir);
+  // ── Swap currencies ───────────────────────────────────────────────────
+  function swapCurrencies() {
+    setSendCurrency(receiveCurrency);
+    setReceiveCurrency(sendCurrency);
+    setSendInput(receiveInput);
+    setReceiveInput(sendInput);
+    setQuote(null);
+    setLastEdited('send');
+  }
+
+  // ── Full reset ────────────────────────────────────────────────────────
+  function reset() {
+    setSendCurrency('CAD');
+    setReceiveCurrency('NGN');
+    setSendInput('');
+    setReceiveInput('');
+    setLastEdited('send');
     setStep('amount');
-    setNgnInput('');
     setQuote(null);
     setQuoteError('');
     setRecipientAccount('');
@@ -246,17 +315,12 @@ export default function Send() {
     if (countdownRef.current) clearInterval(countdownRef.current);
   }
 
-  // ── Handlers ───────────────────────────────────────────────────────────
+  // ── Handlers ──────────────────────────────────────────────────────────
   function goToRecipient() {
-    const ngn = parseFloat(ngnInput);
-    if (!ngn || ngn < 100) return toast('Enter at least ₦100', 'err');
-    if (!quote)            return toast('Wait for rate to load', 'err');
-    if (direction === 'NGN_CAD') {
-      // NGN→CAD: no recipient needed, go straight to PIN
-      setStep('pin');
-    } else {
-      setStep('recipient');
-    }
+    if (sendAmount <= 0 || !quote) return toast('Enter an amount', 'err');
+    if (direction === 'NGN_CAD' && ngnAmount < 100) return toast('Minimum ₦100', 'err');
+    if (direction === 'CAD_NGN' && cadAmount < 1)   return toast('Minimum CAD 1', 'err');
+    setStep(direction === 'NGN_CAD' ? 'pin' : 'recipient');
   }
 
   function goToEmailCheck() {
@@ -270,11 +334,7 @@ export default function Send() {
     setEmailLoading(true);
     try {
       const { data } = await api.post('/me/send/verify-email', { email: senderEmail });
-      if (data.status === 'ready') {
-        setStep('pin');
-      } else {
-        setStep('otp');
-      }
+      setStep(data.status === 'ready' ? 'pin' : 'otp');
     } catch (err: unknown) {
       const msg = (err as { response?: { data?: { message?: string } } }).response?.data?.message;
       toast(msg ?? 'Could not verify email', 'err');
@@ -306,11 +366,8 @@ export default function Send() {
     setInitiating(true);
     setPinError('');
     try {
-      const ngn = parseFloat(ngnInput);
-
       if (direction === 'NGN_CAD') {
-        // NGN→CAD: initiate receive order
-        const { data } = await api.post('/me/send/receive', { ngn_amount: ngn, pin });
+        const { data } = await api.post('/me/send/receive', { ngn_amount: ngnAmount, pin });
         setOrderId(data.order_id);
         setNgnCadInstructions(data.instructions);
         setShowPin(false);
@@ -318,11 +375,9 @@ export default function Send() {
         startCountdown(data.expires_at);
         return;
       }
-
-      // CAD→NGN: existing flow
       const bank = NG_BANKS.find(b => b.code === bankCode)!;
       const { data } = await api.post('/me/send/initiate', {
-        ngn_amount: ngn,
+        ngn_amount: ngnAmount,
         sender_email: senderEmail,
         recipient_account: recipientAccount,
         recipient_bank_code: bankCode,
@@ -339,8 +394,8 @@ export default function Send() {
       const d = (err as { response?: { data?: { message?: string; code?: string } } }).response?.data;
       if (d?.code === 'INCORRECT_PIN') { setPinError('Incorrect PIN. Try again.'); return; }
       if (d?.code === 'PIN_LOCKED')    { setPinError(d.message ?? 'PIN locked. Wait 15 minutes.'); return; }
-      if (d?.code === 'PIN_NOT_SET')   { toast('Set a transaction PIN in Profile → Security first.', 'err'); setShowPin(false); return; }
-      if (d?.code === 'KYC_REQUIRED')  { toast('Complete KYC before sending money internationally.', 'err'); setShowPin(false); return; }
+      if (d?.code === 'PIN_NOT_SET')   { toast('Set a transaction PIN in Profile first.', 'err'); setShowPin(false); return; }
+      if (d?.code === 'KYC_REQUIRED')  { toast('Complete KYC before sending money.', 'err'); setShowPin(false); return; }
       setShowPin(false);
       toast(d?.message ?? 'Could not create send order', 'err');
     } finally {
@@ -353,31 +408,14 @@ export default function Send() {
     startPolling(orderId);
   }
 
-  function reset() {
-    setStep('amount');
-    setNgnInput('');
-    setQuote(null);
-    setRecipientAccount('');
-    setBankCode(NG_BANKS[0].code);
-    setRecipientName('');
-    setSenderEmail('');
-    setOtp('');
-    setOrderId('');
-    setCadNgnInstructions(null);
-    setNgnCadInstructions(null);
-    setOrder(null);
-    if (pollRef.current)      clearInterval(pollRef.current);
-    if (countdownRef.current) clearInterval(countdownRef.current);
-  }
+  // ── Display formatters ────────────────────────────────────────────────
+  const fmtNGN  = (n: number) => '₦' + Math.round(n).toLocaleString('en-NG');
+  const fmtCAD  = (n: number) => 'CAD ' + n.toLocaleString('en-CA', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const fmtRate = (r: number) => Math.round(r).toLocaleString('en-NG');
 
-  // ── Helpers ────────────────────────────────────────────────────────────
-  const fmtNGN = (n: number) => '₦' + n.toLocaleString('en-NG');
-  const fmtCAD = (n: number) => 'CAD ' + n.toLocaleString('en-CA', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-  const fmtRate = (r: number) => '₦' + Math.round(r).toLocaleString('en-NG');
-
-  const countdownMins = Math.floor(countdown / 60);
-  const countdownSecs = countdown % 60;
-  const countdownStr  = `${countdownMins}:${String(countdownSecs).padStart(2, '0')}`;
+  const countdownMins   = Math.floor(countdown / 60);
+  const countdownSecs   = countdown % 60;
+  const countdownStr    = `${countdownMins}:${String(countdownSecs).padStart(2, '0')}`;
   const countdownUrgent = countdown < 300 && countdown > 0;
 
   async function copyText(text: string, label: string) {
@@ -389,7 +427,7 @@ export default function Send() {
     }
   }
 
-  // ── Back button map ────────────────────────────────────────────────────
+  // ── Back map ──────────────────────────────────────────────────────────
   const backMap: Partial<Record<Step, Step>> = {
     recipient:     'amount',
     'email-check': 'recipient',
@@ -397,129 +435,171 @@ export default function Send() {
     pin:           direction === 'NGN_CAD' ? 'amount' : 'email-check',
   };
 
-  // ── Render ─────────────────────────────────────────────────────────────
+  const stepTitles: Record<Step, string> = {
+    amount:        'Send Money',
+    recipient:     'Recipient Details',
+    'email-check': 'Your Interac Email',
+    otp:           'Verify Email',
+    pin:           'Confirm Transfer',
+    instructions:  direction === 'CAD_NGN' ? 'Send via Interac' : 'Nigerian Bank Details',
+    tracking:      'Transfer Status',
+  };
+
+  // ── Render ────────────────────────────────────────────────────────────
   return (
     <div style={{ maxWidth: 480 }}>
 
-      {/* ── Direction toggle (shown on amount step only) ── */}
-      {step === 'amount' && (
-        <div style={{
-          display: 'flex', borderRadius: 12, overflow: 'hidden',
-          border: '1px solid var(--border)', marginBottom: '1.4rem',
-        }}>
-          {([['CAD_NGN', '🇨🇦 Send CAD → NGN 🇳🇬'], ['NGN_CAD', '🇳🇬 Receive NGN → CAD 🇨🇦']] as [Direction, string][]).map(([dir, label]) => (
-            <button
-              key={dir}
-              onClick={() => switchDirection(dir)}
-              style={{
-                flex: 1, padding: '.7rem .5rem', border: 'none', cursor: 'pointer',
-                fontWeight: 600, fontSize: '.78rem', transition: 'background .15s, color .15s',
-                background: direction === dir ? 'var(--accent)' : 'var(--surface)',
-                color: direction === dir ? '#fff' : 'var(--muted)',
-              }}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
-      )}
-
-      {/* ── Header ── */}
+      {/* Header */}
       <div style={{ display: 'flex', alignItems: 'center', gap: '.8rem', marginBottom: '1.6rem' }}>
         {backMap[step] && (
           <button
             onClick={() => setStep(backMap[step]!)}
             style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--muted)', fontSize: '1.3rem', padding: '0 .2rem' }}
-          >←</button>
+          >
+            {'←'}
+          </button>
         )}
-        <h1 style={{ fontSize: '1.4rem', fontWeight: 700, margin: 0 }}>
-          {step === 'amount'       && (direction === 'CAD_NGN' ? 'Send to Nigeria' : 'Receive from Nigeria')}
-          {step === 'recipient'    && 'Recipient Details'}
-          {step === 'email-check'  && 'Your Interac Email'}
-          {step === 'otp'          && 'Verify Email'}
-          {step === 'pin'          && 'Confirm Transfer'}
-          {step === 'instructions' && (direction === 'CAD_NGN' ? 'Send via Interac' : 'Nigerian Bank Details')}
-          {step === 'tracking'     && 'Transfer Status'}
-        </h1>
+        <h1 style={{ fontSize: '1.4rem', fontWeight: 700, margin: 0 }}>{stepTitles[step]}</h1>
       </div>
 
       {/* ══════════════════════════════════════════════════════════════
-          STEP 1 — Amount
+          STEP 1 — Amount (dual-input, both editable)
       ══════════════════════════════════════════════════════════════ */}
       {step === 'amount' && (
         <div>
-          {/* NGN input */}
-          <div className="card" style={{ marginBottom: '1rem' }}>
-            <label style={{ fontSize: '.78rem', color: 'var(--muted)', fontWeight: 600, marginBottom: '.4rem', display: 'block' }}>
-              {direction === 'CAD_NGN' ? 'AMOUNT RECIPIENT RECEIVES (NGN)' : 'AMOUNT TO RECEIVE FROM NIGERIA (NGN)'}
-            </label>
+
+          {/* YOU SEND */}
+          <div className="card" style={{ marginBottom: '.5rem' }}>
+            <div style={{ fontSize: '.7rem', color: 'var(--muted)', fontWeight: 700, letterSpacing: '.08em', marginBottom: '.6rem' }}>
+              YOU SEND
+            </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: '.5rem' }}>
-              <span style={{ fontSize: '1.6rem', fontWeight: 700, color: 'var(--muted)' }}>₦</span>
+              <span style={{ fontSize: '1.5rem', color: 'var(--muted)', fontWeight: 600, flexShrink: 0 }}>
+                {CURRENCY_META[sendCurrency].symbol}
+              </span>
               <input
-                type="number"
-                min="100"
-                step="1000"
-                value={ngnInput}
-                onChange={e => setNgnInput(e.target.value)}
+                type="text"
+                inputMode="decimal"
+                value={sendInput}
+                onChange={e => {
+                  setSendInput(fmtInput(e.target.value, sendCurrency));
+                  setLastEdited('send');
+                }}
                 placeholder="0"
                 autoFocus
                 style={{
                   flex: 1, background: 'none', border: 'none', outline: 'none',
-                  fontSize: '2rem', fontWeight: 700, color: 'var(--text)',
-                  fontFamily: 'inherit',
+                  fontSize: '2.2rem', fontWeight: 700, color: 'var(--text)',
+                  fontFamily: 'inherit', minWidth: 0,
                 }}
               />
-              <span style={{ fontSize: '.85rem', color: 'var(--muted)', fontWeight: 600 }}>NGN</span>
+              <div style={{
+                display: 'flex', alignItems: 'center', gap: '.3rem',
+                padding: '.3rem .65rem', borderRadius: 8,
+                border: '1px solid var(--border)', background: 'var(--surface2)',
+                flexShrink: 0, fontSize: '.88rem', fontWeight: 700,
+              }}>
+                <span>{CURRENCY_META[sendCurrency].flag}</span>
+                <span>{sendCurrency}</span>
+              </div>
             </div>
           </div>
 
-          {/* Quote result */}
-          {quoteLoading && (
-            <div className="card" style={{ textAlign: 'center', padding: '1.2rem', color: 'var(--muted)' }}>
-              <span className="spinner" /> &nbsp;Getting live rate…
-            </div>
-          )}
+          {/* Swap button */}
+          <div style={{ display: 'flex', justifyContent: 'center', marginBottom: '.5rem' }}>
+            <button
+              onClick={swapCurrencies}
+              title="Swap currencies"
+              style={{
+                width: 36, height: 36, borderRadius: '50%',
+                border: '1.5px solid var(--border)',
+                background: 'var(--surface)', color: 'var(--accent2)',
+                cursor: 'pointer', fontSize: '1.1rem', fontWeight: 700,
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+              }}
+            >
+              {'⇅'}
+            </button>
+          </div>
 
+          {/* RECEIVER GETS */}
+          <div className="card" style={{ marginBottom: '1rem' }}>
+            <div style={{ fontSize: '.7rem', color: 'var(--muted)', fontWeight: 700, letterSpacing: '.08em', marginBottom: '.6rem' }}>
+              RECEIVER GETS
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '.5rem' }}>
+              <span style={{ fontSize: '1.5rem', color: 'var(--muted)', fontWeight: 600, flexShrink: 0 }}>
+                {CURRENCY_META[receiveCurrency].symbol}
+              </span>
+              <input
+                type="text"
+                inputMode="decimal"
+                value={quoteLoading && lastEdited === 'send' ? '' : receiveInput}
+                onChange={e => {
+                  setReceiveInput(fmtInput(e.target.value, receiveCurrency));
+                  setLastEdited('receive');
+                }}
+                placeholder={quoteLoading && lastEdited === 'send' ? 'Calculating…' : '0'}
+                style={{
+                  flex: 1, background: 'none', border: 'none', outline: 'none',
+                  fontSize: '2.2rem', fontWeight: 700,
+                  color: quoteLoading && lastEdited === 'send' ? 'var(--muted)' : 'var(--text)',
+                  fontFamily: 'inherit', minWidth: 0,
+                }}
+              />
+              <div style={{
+                display: 'flex', alignItems: 'center', gap: '.3rem',
+                padding: '.3rem .65rem', borderRadius: 8,
+                border: '1px solid var(--border)', background: 'var(--surface2)',
+                flexShrink: 0, fontSize: '.88rem', fontWeight: 700,
+              }}>
+                <span>{CURRENCY_META[receiveCurrency].flag}</span>
+                <span>{receiveCurrency}</span>
+              </div>
+            </div>
+          </div>
+
+          {/* Rate info */}
           {quoteError && (
-            <div className="card" style={{ color: 'var(--danger)', fontSize: '.88rem', padding: '1rem' }}>
+            <div className="card" style={{ color: 'var(--danger)', fontSize: '.88rem', marginBottom: '1rem' }}>
               {quoteError}
             </div>
           )}
 
           {quote && !quoteLoading && (
-            <div className="card" style={{ marginBottom: '1rem' }}>
-              {/* You pay / you receive */}
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '.8rem' }}>
-                <span style={{ color: 'var(--muted)', fontSize: '.85rem' }}>
-                  {direction === 'CAD_NGN' ? 'You send (via Interac)' : 'You receive (to CAD wallet)'}
-                </span>
-                <span style={{ fontWeight: 700, fontSize: '1.1rem' }}>{fmtCAD(quote.cad_amount)}</span>
+            <div className="card" style={{ marginBottom: '1rem', fontSize: '.85rem', padding: '.9rem 1rem' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', padding: '.3rem 0' }}>
+                <span style={{ color: 'var(--muted)' }}>Exchange rate</span>
+                <span style={{ fontWeight: 700 }}>1 CAD = {fmtRate(quote.rate_ngn_per_cad)} NGN</span>
               </div>
-              {/* Rate row */}
-              <div style={{
-                padding: '.7rem 1rem',
-                background: 'rgba(16,217,178,.06)',
-                border: '1px solid rgba(16,217,178,.18)',
-                borderRadius: 10,
-                display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-              }}>
-                <span style={{ fontSize: '.82rem', color: 'var(--accent2)', fontWeight: 600 }}>Rate</span>
-                <span style={{ fontSize: '.88rem', fontWeight: 700 }}>
-                  {direction === 'CAD_NGN'
-                    ? `1 CAD = ${fmtRate(1 / quote.customer_rate)} NGN`
-                    : `₦1,000 = ${fmtCAD(1000 * quote.customer_rate)}`}
-                </span>
+              <div style={{ display: 'flex', justifyContent: 'space-between', padding: '.3rem 0', borderTop: '1px solid var(--border)' }}>
+                <span style={{ color: 'var(--muted)' }}>Transfer fee</span>
+                <span style={{ color: 'var(--accent2)', fontWeight: 600 }}>FREE</span>
               </div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '.7rem' }}>
-                <span style={{ color: 'var(--muted)', fontSize: '.78rem' }}>Spread</span>
-                <span style={{ fontSize: '.78rem' }}>{quote.spread_pct}%</span>
+              <div style={{ display: 'flex', justifyContent: 'space-between', padding: '.3rem 0', borderTop: '1px solid var(--border)' }}>
+                <span style={{ color: 'var(--muted)' }}>Spread</span>
+                <span>{quote.spread_pct}%</span>
               </div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '.2rem' }}>
-                <span style={{ color: 'var(--muted)', fontSize: '.78rem' }}>Rate lock</span>
-                <span style={{ fontSize: '.78rem' }}>30 minutes</span>
+              <div style={{ display: 'flex', justifyContent: 'space-between', padding: '.3rem 0', borderTop: '1px solid var(--border)' }}>
+                <span style={{ color: 'var(--muted)' }}>Rate locked for</span>
+                <span>30 min</span>
               </div>
             </div>
           )}
+
+          {/* Delivery method hint */}
+          <div style={{
+            display: 'flex', alignItems: 'center', gap: '.6rem',
+            padding: '.7rem 1rem', borderRadius: 10, marginBottom: '1rem',
+            background: 'var(--surface)', border: '1px solid var(--border)',
+            fontSize: '.83rem', color: 'var(--muted)',
+          }}>
+            <span style={{ fontSize: '1.1rem' }}>🏦</span>
+            {sendCurrency === 'CAD'
+              ? <span>Delivered via <strong style={{ color: 'var(--text)' }}>Interac e-Transfer</strong> to Nigerian bank account</span>
+              : <span>Nigerian bank transfer credited to your <strong style={{ color: 'var(--text)' }}>CAD wallet</strong></span>
+            }
+          </div>
 
           {/* Internal send link */}
           <div style={{ textAlign: 'center', marginBottom: '1rem' }}>
@@ -528,41 +608,41 @@ export default function Send() {
               onClick={() => navigate('/beneficiaries')}
               style={{ fontSize: '.78rem', color: 'var(--muted)' }}
             >
-              Send to another Zeeh user instead →
+              Send to another Zeeh user instead {'→'}
             </button>
           </div>
 
           <button
             className="btn btn-primary"
             style={{ width: '100%' }}
-            disabled={!quote || quoteLoading || parseFloat(ngnInput) < 100}
+            disabled={!quote || quoteLoading || sendAmount <= 0}
             onClick={goToRecipient}
           >
-            Continue →
+            Continue {'→'}
           </button>
         </div>
       )}
 
       {/* ══════════════════════════════════════════════════════════════
-          STEP 2 — Recipient
+          STEP 2 — Recipient bank details (CAD→NGN only)
       ══════════════════════════════════════════════════════════════ */}
       {step === 'recipient' && (
         <div className="card">
           {/* Transfer summary */}
           <div style={{
+            display: 'flex', justifyContent: 'space-between', alignItems: 'center',
             padding: '.8rem 1rem', marginBottom: '1.4rem',
             background: 'rgba(16,217,178,.06)', borderRadius: 10,
             border: '1px solid rgba(16,217,178,.15)',
-            display: 'flex', justifyContent: 'space-between', alignItems: 'center',
           }}>
             <div>
-              <div style={{ fontSize: '.78rem', color: 'var(--muted)' }}>Sending</div>
-              <div style={{ fontWeight: 700 }}>{fmtNGN(parseFloat(ngnInput))}</div>
-            </div>
-            <div style={{ fontSize: '1.2rem', color: 'var(--muted)' }}>→</div>
-            <div style={{ textAlign: 'right' }}>
               <div style={{ fontSize: '.78rem', color: 'var(--muted)' }}>You pay</div>
-              <div style={{ fontWeight: 700 }}>{quote && fmtCAD(quote.cad_amount)}</div>
+              <div style={{ fontWeight: 700 }}>{fmtCAD(cadAmount)}</div>
+            </div>
+            <div style={{ fontSize: '1.2rem', color: 'var(--muted)' }}>{'→'}</div>
+            <div style={{ textAlign: 'right' }}>
+              <div style={{ fontSize: '.78rem', color: 'var(--muted)' }}>Recipient gets</div>
+              <div style={{ fontWeight: 700 }}>{fmtNGN(ngnAmount)}</div>
             </div>
           </div>
 
@@ -596,27 +676,26 @@ export default function Send() {
               placeholder="Full name as on the account"
             />
             <div style={{ fontSize: '.75rem', color: 'var(--muted)', marginTop: '.25rem' }}>
-              Make sure this matches the bank account exactly.
+              Must match the bank account exactly.
             </div>
           </div>
 
           <button className="btn btn-primary" style={{ width: '100%', marginTop: '.5rem' }} onClick={goToEmailCheck}>
-            Continue →
+            Continue {'→'}
           </button>
         </div>
       )}
 
       {/* ══════════════════════════════════════════════════════════════
-          STEP 3 — Interac email check
+          STEP 3 — Interac email verification
       ══════════════════════════════════════════════════════════════ */}
       {step === 'email-check' && (
         <div>
           <div className="card" style={{ marginBottom: '1rem' }}>
             <p style={{ color: 'var(--muted)', fontSize: '.88rem', marginBottom: '1.2rem', lineHeight: 1.6 }}>
-              You'll send the Interac e-Transfer from this email. We need to verify it once so we can automatically match your payment.
+              You will send the Interac e-Transfer from this email. We verify it once so we can automatically match your payment.
             </p>
 
-            {/* Previously verified emails */}
             {verifiedEmails.length > 0 && (
               <div style={{ marginBottom: '1rem' }}>
                 <label style={{ fontSize: '.78rem', color: 'var(--muted)', fontWeight: 600 }}>VERIFIED EMAILS</label>
@@ -625,8 +704,8 @@ export default function Send() {
                     key={email}
                     onClick={() => setSenderEmail(email)}
                     style={{
-                      width: '100%', textAlign: 'left', padding: '.75rem 1rem',
-                      marginTop: '.4rem', borderRadius: 10,
+                      width: '100%', textAlign: 'left', padding: '.75rem 1rem', marginTop: '.4rem',
+                      borderRadius: 10,
                       border: senderEmail === email ? '2px solid var(--accent2)' : '1px solid var(--border)',
                       background: senderEmail === email ? 'rgba(16,217,178,.06)' : 'var(--surface)',
                       color: 'var(--text)', cursor: 'pointer',
@@ -637,12 +716,14 @@ export default function Send() {
                     {email}
                   </button>
                 ))}
-                <div style={{ textAlign: 'center', margin: '.8rem 0', color: 'var(--muted)', fontSize: '.78rem' }}>or add a new one</div>
+                <div style={{ textAlign: 'center', margin: '.8rem 0', color: 'var(--muted)', fontSize: '.78rem' }}>
+                  or add a new one
+                </div>
               </div>
             )}
 
             <div className="form-group" style={{ marginBottom: '1rem' }}>
-              <label>Email you'll send from</label>
+              <label>Email you will send from</label>
               <input
                 type="email"
                 value={senderEmail}
@@ -658,7 +739,7 @@ export default function Send() {
               disabled={emailLoading || !senderEmail.includes('@')}
               onClick={handleEmailCheck}
             >
-              {emailLoading ? <><span className="spinner" /> Checking…</> : 'Continue →'}
+              {emailLoading ? <><span className="spinner" /> Checking{'…'}</> : 'Continue →'}
             </button>
           </div>
         </div>
@@ -672,7 +753,6 @@ export default function Send() {
           <p style={{ color: 'var(--muted)', fontSize: '.88rem', marginBottom: '1.4rem', lineHeight: 1.6 }}>
             A verification code was sent to <strong style={{ color: 'var(--text)' }}>{senderEmail}</strong>. Enter it below.
           </p>
-
           <div className="form-group">
             <label>Verification Code</label>
             <input
@@ -686,28 +766,26 @@ export default function Send() {
               style={{ letterSpacing: '.3em', fontSize: '1.3rem', textAlign: 'center' }}
             />
           </div>
-
           <button
             className="btn btn-primary"
             style={{ width: '100%' }}
             disabled={otpLoading || otp.length < 4}
             onClick={handleOtpConfirm}
           >
-            {otpLoading ? <><span className="spinner" /> Verifying…</> : 'Verify →'}
+            {otpLoading ? <><span className="spinner" /> Verifying{'…'}</> : 'Verify →'}
           </button>
-
           <button
             className="btn btn-ghost"
             style={{ width: '100%', marginTop: '.5rem' }}
             onClick={() => { setOtp(''); setStep('email-check'); }}
           >
-            ← Use a different email
+            {'←'} Use a different email
           </button>
         </div>
       )}
 
       {/* ══════════════════════════════════════════════════════════════
-          STEP 5 — PIN (confirm transfer)
+          STEP 5 — PIN + transfer review
       ══════════════════════════════════════════════════════════════ */}
       {step === 'pin' && (
         <>
@@ -716,21 +794,21 @@ export default function Send() {
 
             {direction === 'CAD_NGN' ? (
               <>
-                <InfoRow label="You pay"         value={quote ? fmtCAD(quote.cad_amount) : '—'} />
-                <InfoRow label="Recipient gets"  value={fmtNGN(parseFloat(ngnInput))} />
-                <InfoRow label="Rate"            value={quote ? `1 CAD = ${fmtRate(1 / quote.customer_rate)} NGN` : '—'} />
-                <InfoRow label="Bank"            value={NG_BANKS.find(b => b.code === bankCode)?.name ?? bankCode} />
-                <InfoRow label="Account number"  value={recipientAccount} mono />
-                <InfoRow label="Account name"    value={recipientName} />
-                <InfoRow label="Sending from"    value={senderEmail} />
-                <InfoRow label="Method"          value="Interac e-Transfer" last />
+                <InfoRow label="You pay"        value={fmtCAD(cadAmount)} />
+                <InfoRow label="Recipient gets" value={fmtNGN(ngnAmount)} />
+                <InfoRow label="Rate"           value={quote ? `1 CAD = ${fmtRate(quote.rate_ngn_per_cad)} NGN` : '—'} />
+                <InfoRow label="Bank"           value={NG_BANKS.find(b => b.code === bankCode)?.name ?? bankCode} />
+                <InfoRow label="Account number" value={recipientAccount} mono />
+                <InfoRow label="Account name"   value={recipientName} />
+                <InfoRow label="Sending from"   value={senderEmail} />
+                <InfoRow label="Method"         value="Interac e-Transfer" last />
               </>
             ) : (
               <>
-                <InfoRow label="NGN amount"    value={fmtNGN(parseFloat(ngnInput))} />
-                <InfoRow label="You receive"   value={quote ? fmtCAD(quote.cad_amount) : '—'} />
-                <InfoRow label="Rate"          value={quote ? `₦1,000 = ${fmtCAD(1000 * quote.customer_rate)}` : '—'} />
-                <InfoRow label="Credited to"   value="Your CAD wallet" last />
+                <InfoRow label="NGN amount"  value={fmtNGN(ngnAmount)} />
+                <InfoRow label="You receive" value={fmtCAD(cadAmount)} />
+                <InfoRow label="Rate"        value={quote ? `1 CAD = ${fmtRate(quote.rate_ngn_per_cad)} NGN` : '—'} />
+                <InfoRow label="Credited to" value="Your CAD wallet" last />
               </>
             )}
           </div>
@@ -741,7 +819,7 @@ export default function Send() {
             disabled={initiating}
             onClick={() => { setPinError(''); setShowPin(true); }}
           >
-            Enter PIN & Confirm
+            Enter PIN &amp; Confirm
           </button>
 
           {showPin && (
@@ -756,22 +834,18 @@ export default function Send() {
       )}
 
       {/* ══════════════════════════════════════════════════════════════
-          STEP 6 — Payment Instructions
+          STEP 6 — Payment instructions
       ══════════════════════════════════════════════════════════════ */}
       {step === 'instructions' && (cadNgnInstructions || ngnCadInstructions) && (
         <div>
           {/* Rate lock countdown */}
           <div style={{
-            textAlign: 'center', padding: '.7rem 1rem', marginBottom: '1rem',
-            borderRadius: 10,
+            textAlign: 'center', padding: '.7rem 1rem', marginBottom: '1rem', borderRadius: 10,
             background: countdownUrgent ? 'rgba(244,63,94,.08)' : 'rgba(16,217,178,.06)',
             border: `1px solid ${countdownUrgent ? 'rgba(244,63,94,.25)' : 'rgba(16,217,178,.18)'}`,
           }}>
             <div style={{ fontSize: '.78rem', color: 'var(--muted)', marginBottom: '.15rem' }}>Rate locked for</div>
-            <div style={{
-              fontSize: '1.5rem', fontWeight: 700, fontFamily: 'monospace',
-              color: countdownUrgent ? 'var(--danger)' : 'var(--accent2)',
-            }}>
+            <div style={{ fontSize: '1.5rem', fontWeight: 700, fontFamily: 'monospace', color: countdownUrgent ? 'var(--danger)' : 'var(--accent2)' }}>
               {countdown === 0 ? 'EXPIRED' : countdownStr}
             </div>
             {countdown === 0 && (
@@ -781,71 +855,85 @@ export default function Send() {
             )}
           </div>
 
-          {/* Instructions card — CAD→NGN */}
+          {/* CAD→NGN Interac instructions */}
           {cadNgnInstructions && (
             <div className="card" style={{ marginBottom: '1rem' }}>
               <div style={{ fontSize: '.78rem', fontWeight: 700, color: 'var(--accent2)', marginBottom: '1rem', letterSpacing: '.05em' }}>
                 INTERAC E-TRANSFER INSTRUCTIONS
               </div>
-              <InstructionRow label="Send to"            value={cadNgnInstructions.send_to_email}                  onCopy={() => copyText(cadNgnInstructions.send_to_email, 'Email')} />
-              <InstructionRow label="Amount"             value={`CAD ${cadNgnInstructions.amount_cad.toFixed(2)}`} onCopy={() => copyText(cadNgnInstructions.amount_cad.toFixed(2), 'Amount')} highlight />
-              <InstructionRow label="Reference / Message" value={cadNgnInstructions.reference}                     onCopy={() => copyText(cadNgnInstructions.reference, 'Reference')} mono />
-              <InstructionRow label="Send from"          value={cadNgnInstructions.send_from_email}                last />
+              <InstructionRow
+                label="Send to"
+                value={cadNgnInstructions.send_to_email}
+                onCopy={() => copyText(cadNgnInstructions.send_to_email, 'Email')}
+              />
+              <InstructionRow
+                label="Amount"
+                value={`CAD ${cadNgnInstructions.amount_cad.toLocaleString('en-CA', { minimumFractionDigits: 2 })}`}
+                onCopy={() => copyText(cadNgnInstructions.amount_cad.toFixed(2), 'Amount')}
+                highlight
+              />
+              <InstructionRow
+                label="Reference / Message"
+                value={cadNgnInstructions.reference}
+                onCopy={() => copyText(cadNgnInstructions.reference, 'Reference')}
+                mono
+              />
+              <InstructionRow
+                label="Send from"
+                value={cadNgnInstructions.send_from_email}
+                last
+              />
               <div style={{ marginTop: '1rem', padding: '.8rem 1rem', background: 'rgba(245,158,11,.06)', border: '1px solid rgba(245,158,11,.2)', borderRadius: 10, fontSize: '.8rem', color: 'var(--warn)', lineHeight: 1.5 }}>
-                ⚠️ Send <strong>exactly</strong> CAD {cadNgnInstructions.amount_cad.toFixed(2)}. Wrong amounts delay your transfer. Include the reference in the message field.
+                {'⚠️'} Send <strong>exactly</strong>{' '}
+                CAD {cadNgnInstructions.amount_cad.toLocaleString('en-CA', { minimumFractionDigits: 2 })}.
+                Wrong amounts delay your transfer. Include the reference in the message field.
               </div>
             </div>
           )}
 
-          {/* Instructions card — NGN→CAD */}
+          {/* NGN→CAD virtual account instructions */}
           {ngnCadInstructions && (
             <div className="card" style={{ marginBottom: '1rem' }}>
               <div style={{ fontSize: '.78rem', fontWeight: 700, color: 'var(--accent2)', marginBottom: '1rem', letterSpacing: '.05em' }}>
-                NIGERIAN BANK TRANSFER — SHARE WITH SENDER
+                NIGERIAN BANK TRANSFER {'—'} SHARE WITH SENDER
               </div>
-              <InstructionRow label="Bank"           value={ngnCadInstructions.bank_name}                                         onCopy={() => copyText(ngnCadInstructions.bank_name, 'Bank')} />
-              <InstructionRow label="Account Number" value={ngnCadInstructions.account_number}                                    onCopy={() => copyText(ngnCadInstructions.account_number, 'Account Number')} highlight mono />
-              <InstructionRow label="Account Name"   value={ngnCadInstructions.account_name}                                      onCopy={() => copyText(ngnCadInstructions.account_name, 'Account Name')} />
-              <InstructionRow label="Amount"         value={fmtNGN(ngnCadInstructions.amount_ngn)}                                onCopy={() => copyText(String(ngnCadInstructions.amount_ngn), 'Amount')} />
-              <InstructionRow label="Reference"      value={ngnCadInstructions.reference}                                        onCopy={() => copyText(ngnCadInstructions.reference, 'Reference')} mono last />
+              <InstructionRow label="Bank"           value={ngnCadInstructions.bank_name}           onCopy={() => copyText(ngnCadInstructions.bank_name, 'Bank')} />
+              <InstructionRow label="Account Number" value={ngnCadInstructions.account_number}      onCopy={() => copyText(ngnCadInstructions.account_number, 'Account Number')} highlight mono />
+              <InstructionRow label="Account Name"   value={ngnCadInstructions.account_name}        onCopy={() => copyText(ngnCadInstructions.account_name, 'Account Name')} />
+              <InstructionRow label="Amount"         value={fmtNGN(ngnCadInstructions.amount_ngn)}  onCopy={() => copyText(String(ngnCadInstructions.amount_ngn), 'Amount')} />
+              <InstructionRow label="Reference"      value={ngnCadInstructions.reference}           onCopy={() => copyText(ngnCadInstructions.reference, 'Reference')} mono last />
               <div style={{ marginTop: '1rem', padding: '.8rem 1rem', background: 'rgba(16,217,178,.06)', border: '1px solid rgba(16,217,178,.2)', borderRadius: 10, fontSize: '.8rem', color: 'var(--accent2)', lineHeight: 1.5 }}>
                 Share these details with the person sending from Nigeria. Once they transfer, your CAD will appear in your wallet automatically.
               </div>
             </div>
           )}
 
-          <button
-            className="btn btn-primary"
-            style={{ width: '100%', marginBottom: '.6rem' }}
-            onClick={goToTracking}
-          >
-            {cadNgnInstructions ? "I've sent the Interac — Track →" : "Waiting for Nigerian Transfer — Track →"}
+          <button className="btn btn-primary" style={{ width: '100%', marginBottom: '.6rem' }} onClick={goToTracking}>
+            {cadNgnInstructions ? "I have sent the Interac — Track →" : "Waiting for Nigerian Transfer — Track →"}
           </button>
           <button className="btn btn-ghost" style={{ width: '100%' }} onClick={reset}>
-            Cancel & Start Over
+            Cancel &amp; Start Over
           </button>
         </div>
       )}
 
       {/* ══════════════════════════════════════════════════════════════
-          STEP 7 — Tracking
+          STEP 7 — Transfer tracking
       ══════════════════════════════════════════════════════════════ */}
       {step === 'tracking' && (
         <div>
-          {/* Status card */}
           <div className="card" style={{ textAlign: 'center', marginBottom: '1rem' }}>
             <StatusDisplay order={order} />
           </div>
 
-          {/* Details */}
           {order && (
             <div className="card" style={{ marginBottom: '1rem' }}>
               <InfoRow label="Order ID" value={order.order_id} mono />
               {order.direction === 'NGN_CAD' ? (
                 <>
-                  <InfoRow label="NGN sent"     value={fmtNGN(order.ngn_amount)} />
-                  <InfoRow label="CAD credited"  value={fmtCAD(order.cad_amount)} />
-                  <InfoRow label="Credited to"   value="Your CAD wallet" last />
+                  <InfoRow label="NGN sent"    value={fmtNGN(order.ngn_amount)} />
+                  <InfoRow label="CAD credited" value={fmtCAD(order.cad_amount)} />
+                  <InfoRow label="Credited to"  value="Your CAD wallet" last />
                 </>
               ) : (
                 <>
@@ -863,13 +951,11 @@ export default function Send() {
               Send Again
             </button>
           )}
-
           {(order?.status === 'failed' || order?.status === 'expired') && (
             <button className="btn btn-ghost" style={{ width: '100%' }} onClick={reset}>
               Start New Transfer
             </button>
           )}
-
           {(!order || ['awaiting_payment', 'cad_received', 'ngn_received', 'payout_initiated'].includes(order.status)) && (
             <div style={{ textAlign: 'center', color: 'var(--muted)', fontSize: '.8rem', marginTop: '1rem' }}>
               This page updates automatically every 5 seconds.
@@ -881,7 +967,7 @@ export default function Send() {
   );
 }
 
-// ── Sub-components ─────────────────────────────────────────────────────────
+// ── Sub-components ──────────────────────────────────────────────────────────
 
 function InfoRow({ label, value, mono, last }: { label: string; value: string; mono?: boolean; last?: boolean }) {
   return (
@@ -905,17 +991,13 @@ function InstructionRow({
   highlight?: boolean; mono?: boolean; last?: boolean;
 }) {
   return (
-    <div style={{
-      padding: '.75rem 0',
-      borderBottom: last ? 'none' : '1px solid var(--border)',
-    }}>
+    <div style={{ padding: '.75rem 0', borderBottom: last ? 'none' : '1px solid var(--border)' }}>
       <div style={{ fontSize: '.75rem', color: 'var(--muted)', fontWeight: 600, marginBottom: '.2rem' }}>{label}</div>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '.5rem' }}>
         <span style={{
           fontSize: highlight ? '1.15rem' : '.9rem',
           fontWeight: highlight ? 700 : 500,
           fontFamily: mono ? 'monospace' : undefined,
-          color: highlight ? 'var(--text)' : 'var(--text)',
           wordBreak: 'break-all',
         }}>
           {value}
@@ -940,27 +1022,25 @@ function InstructionRow({
 type OrderStatus = 'awaiting_payment' | 'cad_received' | 'ngn_received' | 'payout_initiated' | 'completed' | 'failed' | 'expired';
 
 const STATUS_CONFIG: Record<OrderStatus, { icon: string; label: string; sub: string; color: string }> = {
-  awaiting_payment:  { icon: '⏳', label: 'Waiting for payment',         sub: 'Send money using the instructions above.',      color: 'var(--warn)' },
-  cad_received:      { icon: '✅', label: 'CAD received',                sub: 'Converting and sending to recipient…',           color: 'var(--accent2)' },
-  ngn_received:      { icon: '✅', label: 'NGN received',                sub: 'Exchanging to CAD and crediting your wallet…',   color: 'var(--accent2)' },
-  payout_initiated:  { icon: '🚀', label: 'Processing',                  sub: 'Funds are on the way.',                          color: 'var(--accent2)' },
-  completed:         { icon: '🎉', label: 'Transfer complete!',          sub: "Funds delivered successfully.",                  color: 'var(--accent2)' },
-  failed:            { icon: '❌', label: 'Transfer failed',             sub: 'Something went wrong. Contact support.',         color: 'var(--danger)' },
-  expired:           { icon: '⌛', label: 'Rate expired',               sub: "Transfer window closed. Start a new one.",       color: 'var(--muted)' },
+  awaiting_payment: { icon: '⏳', label: 'Waiting for payment',     sub: 'Send money using the instructions above.',    color: 'var(--warn)' },
+  cad_received:     { icon: '✅', label: 'CAD received',            sub: 'Converting and sending to recipient…',   color: 'var(--accent2)' },
+  ngn_received:     { icon: '✅', label: 'NGN received',            sub: 'Exchanging to CAD and crediting your wallet…', color: 'var(--accent2)' },
+  payout_initiated: { icon: '🚀', label: 'Processing',        sub: 'Funds are on the way.',                       color: 'var(--accent2)' },
+  completed:        { icon: '🎉', label: 'Transfer complete!', sub: 'Funds delivered successfully.',               color: 'var(--accent2)' },
+  failed:           { icon: '❌', label: 'Transfer failed',         sub: 'Something went wrong. Contact support.',      color: 'var(--danger)' },
+  expired:          { icon: '⌛', label: 'Rate expired',            sub: 'Transfer window closed. Start a new one.',    color: 'var(--muted)' },
 };
 
-function StatusDisplay({ order }: { order: SendOrder | null }) {
+function StatusDisplay({ order }: { order: { order_id: string; direction?: Direction; status: OrderStatus; cad_amount: number; ngn_amount: number; customer_rate: number; recipient_name?: string; va_account_number?: string; va_account_name?: string; va_bank_name?: string; created_at: string; expires_at: string; completed_at?: string; failure_reason?: string; payout_status?: string } | null }) {
   if (!order) {
     return (
       <div style={{ padding: '2rem', color: 'var(--muted)' }}>
         <span className="spinner spinner-lg" />
-        <div style={{ marginTop: '1rem' }}>Checking status…</div>
+        <div style={{ marginTop: '1rem' }}>Checking status{'…'}</div>
       </div>
     );
   }
-
   const cfg = STATUS_CONFIG[order.status] ?? STATUS_CONFIG.awaiting_payment;
-
   return (
     <div style={{ padding: '1.5rem 1rem' }}>
       <div style={{ fontSize: '3rem', marginBottom: '.75rem' }}>{cfg.icon}</div>
@@ -971,19 +1051,16 @@ function StatusDisplay({ order }: { order: SendOrder | null }) {
           {order.failure_reason}
         </div>
       )}
-
-      {/* Progress dots */}
       {!['failed', 'expired'].includes(order.status) && (
         <div style={{ display: 'flex', gap: '.5rem', justifyContent: 'center', marginTop: '1.2rem' }}>
           {(['awaiting_payment', 'payout_initiated', 'completed'] as OrderStatus[]).map(s => (
             <div
               key={s}
               style={{
-                width: 8, height: 8, borderRadius: '50%',
+                width: 8, height: 8, borderRadius: '50%', transition: 'background .3s',
                 background: (['awaiting_payment', 'payout_initiated', 'completed'] as OrderStatus[]).indexOf(s)
                   <= (['awaiting_payment', 'cad_received', 'ngn_received', 'payout_initiated', 'completed'] as OrderStatus[]).indexOf(order.status)
                   ? cfg.color : 'var(--border)',
-                transition: 'background .3s',
               }}
             />
           ))}
