@@ -1,6 +1,6 @@
 import axios, { AxiosInstance, AxiosError } from 'axios';
 
-const RC_BASE = process.env.RC_BASE_URL ?? 'https://merchant-api.remitclick.com/v1';
+const RC_BASE = process.env.RC_BASE_URL ?? 'https://merchant-api.remitclick.com/merchant/v1';
 
 function buildClient(): AxiosInstance {
   const client = axios.create({
