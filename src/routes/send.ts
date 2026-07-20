@@ -1,4 +1,4 @@
-import { Router, Request, Response } from 'express';
+import { Router, Request, Response, NextFunction } from 'express';
 import {
   rcCreateCustomer,
   rcGetQuote,
@@ -7,37 +7,46 @@ import {
   rcListDepositEmails,
   rcCreatePayout,
   rcGetPayout,
+  rcProvisionVirtualAccount,
+  rcListVirtualAccounts,
 } from '../lib/remitclickClient';
 import { createSendOrder, getSendOrder, getUserSendOrders } from '../lib/sendOrderStore';
 import { getUserById, updateUser } from '../lib/userStore';
 import { getSpreadPct } from '../config/spread';
+import { requireEmailVerified, requirePin, requireKyc } from '../middleware/userAuth';
+import rateLimit from 'express-rate-limit';
+
+const initiateRateLimiter = rateLimit({ windowMs: 60_000, max: 5, standardHeaders: true, legacyHeaders: false });
 
 const router = Router();
 
 // All routes here are mounted under /me/send — requireUser already applied upstream
 
 // ── GET /me/send/quote ─────────────────────────────────────────────────────
-// Returns a live CAD→NGN rate with Zeeh's spread applied.
-// Query: ?amount=100  (CAD amount, major units)
+// Returns a live rate with Zeeh's spread applied.
+// Query: ?amount=1&from=CAD&to=NGN  (defaults: from=CAD, to=NGN)
+// For NGN→CAD: ?amount=50000&from=NGN&to=CAD
 router.get('/quote', async (req: Request, res: Response) => {
-  const cadAmount = parseFloat(req.query.amount as string);
-  if (!cadAmount || cadAmount <= 0) {
-    return res.status(400).json({ success: false, message: 'amount is required (CAD, major units)' });
+  const from = ((req.query.from as string) ?? 'CAD').toUpperCase();
+  const to   = ((req.query.to   as string) ?? 'NGN').toUpperCase();
+  const amount = parseFloat(req.query.amount as string);
+  if (!amount || amount <= 0) {
+    return res.status(400).json({ success: false, message: 'amount is required (major units)' });
   }
 
-  const rawQuote = await rcGetQuote('CAD', 'NGN', cadAmount);
-  const spreadPct = getSpreadPct('CAD', 'NGN');
-
-  // Apply spread: customer gets a worse rate (we earn the difference)
+  const rawQuote = await rcGetQuote(from, to, amount);
+  const spreadPct = getSpreadPct(from, to);
   const customerRate = rawQuote.rate * (1 - spreadPct / 100);
-  const ngnAmount = Math.floor(cadAmount * customerRate);
+  const convertedAmount = parseFloat((amount * customerRate).toFixed(2));
 
   return res.json({
     success: true,
-    from: 'CAD',
-    to: 'NGN',
-    cad_amount: cadAmount,
-    ngn_amount: ngnAmount,
+    from, to,
+    source_amount: amount,
+    converted_amount: convertedAmount,
+    // convenience aliases for each direction
+    cad_amount: from === 'CAD' ? amount : convertedAmount,
+    ngn_amount: from === 'NGN' ? amount : convertedAmount,
     raw_rate: rawQuote.rate,
     customer_rate: customerRate,
     spread_pct: spreadPct,
@@ -107,9 +116,10 @@ router.get('/emails', async (req: Request, res: Response) => {
 
 // ── POST /me/send/initiate ─────────────────────────────────────────────────
 // Creates a send order — locks the rate and returns Interac payment instructions.
+// Requires: verified email + completed KYC + transaction PIN (same as internal sends)
 // Body:
-//   { ngn_amount, sender_email, recipient_account, recipient_bank_code, recipient_bank_name, recipient_name }
-router.post('/initiate', async (req: Request, res: Response) => {
+//   { ngn_amount, sender_email, recipient_account, recipient_bank_code, recipient_bank_name, recipient_name, pin }
+router.post('/initiate', requireEmailVerified, requireKyc, requirePin, initiateRateLimiter, async (req: Request, res: Response, _next: NextFunction) => {
   const {
     ngn_amount,
     sender_email,
@@ -152,6 +162,7 @@ router.post('/initiate', async (req: Request, res: Response) => {
   const order = await createSendOrder({
     user_id: userId,
     rc_customer_id: rcCustomerId,
+    direction: 'CAD_NGN',
     sender_email,
     cad_amount: cadAmount,
     ngn_amount,
@@ -183,6 +194,78 @@ router.post('/initiate', async (req: Request, res: Response) => {
   });
 });
 
+// ── POST /me/send/receive ──────────────────────────────────────────────────
+// Initiate a NGN→CAD receive order. Provisions a virtual NGN account for the
+// user (or reuses existing). Returns account details for the Nigerian sender.
+// Requires KYC + PIN like the outbound send.
+// Body: { ngn_amount: number }
+router.post('/receive', requireEmailVerified, requireKyc, requirePin, initiateRateLimiter, async (req: Request, res: Response) => {
+  const { ngn_amount } = req.body as { ngn_amount?: number };
+  if (!ngn_amount || ngn_amount <= 0) {
+    return res.status(400).json({ success: false, message: 'ngn_amount is required' });
+  }
+
+  const userId = (req as Request & { user: { user_id: string } }).user.user_id;
+  const user = await getUserById(userId);
+  if (!user) return res.status(404).json({ success: false, message: 'User not found' });
+
+  // Ensure RC customer exists
+  let rcCustomerId = user.rc_customer_id;
+  if (!rcCustomerId) {
+    const rcCustomer = await rcCreateCustomer(user.email, user.first_name, user.last_name);
+    rcCustomerId = rcCustomer.id;
+    await updateUser(userId, { rc_customer_id: rcCustomerId });
+  }
+
+  // Get or provision an NGN virtual account for this customer
+  const existingVAs = await rcListVirtualAccounts(rcCustomerId);
+  let va = existingVAs.find(v => v.currency === 'NGN');
+  if (!va) {
+    va = await rcProvisionVirtualAccount(rcCustomerId, 'NGN');
+  }
+
+  // Lock the NGN→CAD rate
+  const spreadPct = getSpreadPct('NGN', 'CAD');
+  const rawQuote = await rcGetQuote('NGN', 'CAD', ngn_amount);
+  const customerRate = rawQuote.rate * (1 - spreadPct / 100);
+  const cadAmount = parseFloat((ngn_amount * customerRate).toFixed(2));
+
+  // Create the receive order (30-min rate lock)
+  const order = await createSendOrder({
+    user_id: userId,
+    rc_customer_id: rcCustomerId,
+    direction: 'NGN_CAD',
+    ngn_amount,
+    cad_amount: cadAmount,
+    raw_rate: rawQuote.rate,
+    customer_rate: customerRate,
+    spread_pct: spreadPct,
+    rc_virtual_account_id: va.id,
+    va_account_number: va.accountNumber,
+    va_account_name: va.accountName,
+    va_bank_name: va.bankName,
+    status: 'awaiting_payment',
+  });
+
+  return res.json({
+    success: true,
+    order_id: order.order_id,
+    ngn_amount,
+    cad_amount: cadAmount,
+    customer_rate: customerRate,
+    expires_at: order.expires_at,
+    instructions: {
+      method: 'Nigerian Bank Transfer',
+      account_number: va.accountNumber,
+      account_name: va.accountName ?? 'Zeeh Africa',
+      bank_name: va.bankName ?? 'Kuda',
+      amount_ngn: ngn_amount,
+      reference: order.order_id,
+      note: `Transfer exactly ₦${ngn_amount.toLocaleString('en-NG')} to the account above. Use order ID as reference. Rate locked for 30 minutes.`,
+    },
+  });
+});
+
 // ── GET /me/send/:orderId ──────────────────────────────────────────────────
 // Poll the status of a send order.
 router.get('/:orderId', async (req: Request, res: Response) => {
@@ -202,11 +285,15 @@ router.get('/:orderId', async (req: Request, res: Response) => {
   return res.json({
     success: true,
     order_id: order.order_id,
+    direction: order.direction,
     status: order.status,
     cad_amount: order.cad_amount,
     ngn_amount: order.ngn_amount,
     customer_rate: order.customer_rate,
     recipient_name: order.recipient_name,
+    va_account_number: order.va_account_number,
+    va_account_name: order.va_account_name,
+    va_bank_name: order.va_bank_name,
     created_at: order.created_at,
     expires_at: order.expires_at,
     completed_at: order.completed_at,

@@ -220,3 +220,62 @@ export async function rcGetPaymentRequest(id: string): Promise<RcPaymentRequest>
   const res = await rc.get<RcPaymentRequest>(`/payment-requests/${id}`);
   return res.data;
 }
+
+// ── Virtual Accounts ───────────────────────────────────────────────────────
+
+export interface RcVirtualAccount {
+  id: string;
+  customerId: string;
+  walletId: string;
+  currency: string;
+  livemode: boolean;
+  accountNumber: string;
+  accountName?: string;
+  bankName?: string;
+  providerName: string;
+  createdAt: string;
+}
+
+export async function rcProvisionVirtualAccount(customerId: string, currency: string): Promise<RcVirtualAccount> {
+  const res = await rc.post<RcVirtualAccount>(`/customers/${customerId}/virtual-accounts`, { currency });
+  return res.data;
+}
+
+export async function rcListVirtualAccounts(customerId: string): Promise<RcVirtualAccount[]> {
+  const res = await rc.get<RcVirtualAccount[]>(`/customers/${customerId}/virtual-accounts`);
+  return res.data;
+}
+
+// ── Exchanges ──────────────────────────────────────────────────────────────
+
+export interface RcExchangeQuote {
+  id: string;
+  from: string;
+  to: string;
+  amount: number;
+  rate: number;
+  convertedAmount: number;
+  expiresAt: string;
+}
+
+export interface RcExchange {
+  id: string;
+  status: 'pending' | 'completed' | 'failed';
+  from: string;
+  to: string;
+  amount: number;
+  rate: number;
+  convertedAmount: number;
+  createdAt: string;
+  completedAt?: string;
+}
+
+export async function rcExchangeQuote(from: string, to: string, amount: number): Promise<RcExchangeQuote> {
+  const res = await rc.post<RcExchangeQuote>('/exchanges/quote', { from, to, amount });
+  return res.data;
+}
+
+export async function rcExecuteExchange(quoteId: string): Promise<RcExchange> {
+  const res = await rc.post<RcExchange>('/exchanges', { quoteId });
+  return res.data;
+}

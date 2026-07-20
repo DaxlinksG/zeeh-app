@@ -29,8 +29,8 @@ import { creditBalance } from './lib/ledger';
 import { warmWalletCache } from './lib/walletCache';
 import { updateKycStatus, getUserById, updateUser } from './lib/userStore';
 import type { KycStatus } from './lib/userStore';
-import { getPendingOrderForCustomer, updateSendOrderStatus } from './lib/sendOrderStore';
-import { rcCreatePayout, rcGetDeposit, rcGetPayout } from './lib/remitclickClient';
+import { getPendingOrderForCustomer, getPendingReceiveOrderForCustomer, updateSendOrderStatus } from './lib/sendOrderStore';
+import { rcCreatePayout, rcGetDeposit, rcGetPayout, rcExchangeQuote, rcExecuteExchange } from './lib/remitclickClient';
 import { sendKycSubmitted, sendAdminKycAlert } from './lib/mailer';
 import { getUserIdByKycSession } from './lib/kycSessionStore';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
@@ -795,29 +795,59 @@ app.post('/webhooks/remitclick', express.json(), async (req, res) => {
       return res.status(200).json({ received: true });
     }
 
-    const order = await getPendingOrderForCustomer(rcCustomerId).catch(() => null);
-    if (order) {
-      try {
-        await updateSendOrderStatus(order.order_id, 'cad_received', { rc_deposit_id: depositId });
+    const depositCurrency = (verifiedDeposit.currency ?? '').toUpperCase();
 
-        const payout = await rcCreatePayout({
-          amount: order.ngn_amount,
-          currency: 'NGN',
-          sourceCurrency: 'CAD',
-          recipient: {
-            accountNumber: order.recipient_account,
-            bankCode: order.recipient_bank_code,
-            accountName: order.recipient_name,
-            bankName: order.recipient_bank_name,
+    // ── CAD→NGN: Interac CAD deposit matched — fire NGN payout ──
+    if (depositCurrency === 'CAD') {
+      const order = await getPendingOrderForCustomer(rcCustomerId).catch(() => null);
+      if (order && order.direction === 'CAD_NGN') {
+        try {
+          await updateSendOrderStatus(order.order_id, 'cad_received', { rc_deposit_id: depositId });
+          const payout = await rcCreatePayout({
+            amount: order.ngn_amount,
             currency: 'NGN',
-          },
-          customerId: rcCustomerId,
-          reference: order.order_id,
-        });
+            sourceCurrency: 'CAD',
+            recipient: {
+              accountNumber: order.recipient_account!,
+              bankCode: order.recipient_bank_code!,
+              accountName: order.recipient_name!,
+              bankName: order.recipient_bank_name,
+              currency: 'NGN',
+            },
+            customerId: rcCustomerId,
+            reference: order.order_id,
+          });
+          await updateSendOrderStatus(order.order_id, 'payout_initiated', { rc_payout_id: payout.id });
+        } catch (err) {
+          console.error('[RC webhook] CAD→NGN payout failed for order', order?.order_id, err);
+        }
+      }
+    }
 
-        await updateSendOrderStatus(order.order_id, 'payout_initiated', { rc_payout_id: payout.id });
-      } catch (err) {
-        console.error('[RC webhook] Failed to initiate payout for order', order.order_id, err);
+    // ── NGN→CAD: NGN virtual-account deposit — exchange to CAD, credit wallet ──
+    if (depositCurrency === 'NGN') {
+      const order = await getPendingReceiveOrderForCustomer(rcCustomerId).catch(() => null);
+      if (order && order.direction === 'NGN_CAD') {
+        try {
+          await updateSendOrderStatus(order.order_id, 'ngn_received', { rc_deposit_id: depositId });
+
+          // Lock exchange quote then execute (NGN business wallet → CAD business wallet)
+          const exchangeQuote = await rcExchangeQuote('NGN', 'CAD', verifiedDeposit.amount);
+          const exchange = await rcExecuteExchange(exchangeQuote.id);
+
+          await updateSendOrderStatus(order.order_id, 'payout_initiated', { rc_exchange_id: exchange.id });
+
+          // Credit the Zeeh user's CAD ledger balance
+          const cadReceived = exchange.convertedAmount.toFixed(2);
+          await creditBalance(order.user_id, 'CAD', cadReceived, order.order_id, `NGN→CAD receive order ${order.order_id}`);
+
+          await updateSendOrderStatus(order.order_id, 'completed', { completed_at: new Date().toISOString() });
+        } catch (err) {
+          console.error('[RC webhook] NGN→CAD exchange failed for order', order?.order_id, err);
+          await updateSendOrderStatus(order.order_id, 'failed', {
+            failure_reason: 'Exchange failed. Contact support.',
+          }).catch(() => {});
+        }
       }
     }
   }
