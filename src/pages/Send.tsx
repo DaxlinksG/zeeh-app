@@ -832,9 +832,9 @@ const STATUS_CONFIG: Record<OrderStatus, { icon: string; label: string; sub: str
   awaiting_payment:  { icon: '⏳', label: 'Waiting for your Interac',   sub: 'Send your Interac e-Transfer now.',              color: 'var(--warn)' },
   cad_received:      { icon: '✅', label: 'Payment received',            sub: 'Converting and sending to recipient…',           color: 'var(--accent2)' },
   payout_initiated:  { icon: '🚀', label: 'Sending to recipient',        sub: 'Funds are on the way to the bank account.',      color: 'var(--accent2)' },
-  completed:         { icon: '🎉', label: 'Transfer complete!',          sub: 'Funds delivered to the recipient's account.',   color: 'var(--accent2)' },
+  completed:         { icon: '🎉', label: 'Transfer complete!',          sub: "Funds delivered to the recipient's account.",   color: 'var(--accent2)' },
   failed:            { icon: '❌', label: 'Transfer failed',             sub: 'Something went wrong. Contact support.',         color: 'var(--danger)' },
-  expired:           { icon: '⌛', label: 'Rate expired',               sub: 'You didn't send in time. Start a new transfer.', color: 'var(--muted)' },
+  expired:           { icon: '⌛', label: 'Rate expired',               sub: "You didn't send in time. Start a new transfer.", color: 'var(--muted)' },
 };
 
 function StatusDisplay({ order }: { order: SendOrder | null }) {
