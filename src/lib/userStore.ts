@@ -50,6 +50,8 @@ export interface User {
   transaction_pin_hash?:  string;
   pin_failed_attempts?:   number;
   pin_locked_until?:      number; // Unix timestamp
+  // RemitClick customer ID — provisioned on first send
+  rc_customer_id?:        string;
 }
 
 export interface KycRecord {
@@ -145,6 +147,33 @@ export async function updateUserProfile(
     TableName: USERS_TABLE,
     Key: { user_id: userId },
     UpdateExpression: `SET ${updates.join(', ')}`,
+    ExpressionAttributeValues: values,
+  }));
+}
+
+// ── Generic field update (for adding rc_customer_id etc.) ─────────────────
+export async function updateUser(userId: string, fields: Partial<User>): Promise<void> {
+  const updates: string[] = [];
+  const names: Record<string, string> = {};
+  const values: Record<string, unknown> = {};
+  let i = 0;
+
+  for (const [key, val] of Object.entries(fields)) {
+    if (val === undefined) continue;
+    const nk = `#f${i}`;
+    const vk = `:v${i}`;
+    names[nk] = key;
+    values[vk] = val;
+    updates.push(`${nk} = ${vk}`);
+    i++;
+  }
+  if (updates.length === 0) return;
+
+  await db.send(new UpdateCommand({
+    TableName: USERS_TABLE,
+    Key: { user_id: userId },
+    UpdateExpression: `SET ${updates.join(', ')}`,
+    ExpressionAttributeNames: names,
     ExpressionAttributeValues: values,
   }));
 }

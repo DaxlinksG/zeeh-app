@@ -18,6 +18,7 @@ import adminRouter from './routes/admin';
 import balanceRouter from './routes/balance';
 import authRouter from './routes/auth';
 import meRouter from './routes/me';
+import sendRouter from './routes/send';
 import { requireUser } from './middleware/userAuth';
 import { createPendingDeposit } from './lib/deposits';
 import { runReconciliation, getSnapshots, getLatestSnapshot } from './lib/treasury';
@@ -26,8 +27,10 @@ import virtualAccountsRouter from './routes/virtualAccounts';
 import currenciesRouter from './routes/currencies';
 import { creditBalance } from './lib/ledger';
 import { warmWalletCache } from './lib/walletCache';
-import { updateKycStatus, getUserById } from './lib/userStore';
+import { updateKycStatus, getUserById, updateUser } from './lib/userStore';
 import type { KycStatus } from './lib/userStore';
+import { getPendingOrderForCustomer, updateSendOrderStatus } from './lib/sendOrderStore';
+import { rcCreatePayout } from './lib/remitclickClient';
 import { sendKycSubmitted, sendAdminKycAlert } from './lib/mailer';
 import { getUserIdByKycSession } from './lib/kycSessionStore';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
@@ -82,7 +85,7 @@ app.use(express.json({
   limit: '8mb',
   verify: (req, _res, buf) => {
     const path = (req as express.Request).path;
-    if (path === '/webhooks/receive' || path === '/webhooks/kyc' || path === '/webhooks/flutterwave') {
+    if (path === '/webhooks/receive' || path === '/webhooks/kyc' || path === '/webhooks/flutterwave' || path === '/webhooks/remitclick') {
       (req as express.Request & { rawBody?: Buffer }).rawBody = buf;
     }
   },
@@ -750,6 +753,82 @@ app.post('/webhooks/flutterwave', async (req, res) => {
   res.status(200).json({ received: true });
 });
 
+// ── RemitClick webhook ─────────────────────────────────────────────────────
+// Events: deposit.completed, payout.completed, payout.failed
+app.post('/webhooks/remitclick', express.json(), async (req, res) => {
+  const sig = req.headers['x-remitclick-signature'] as string | undefined;
+  const secret = process.env.RC_WEBHOOK_SECRET;
+
+  // Verify HMAC-SHA256: signed material is "{timestamp}.{rawBody}"
+  if (secret && sig) {
+    const match = sig.match(/t=(\d+),v1=([a-f0-9]+)/);
+    if (match) {
+      const [, ts, v1] = match;
+      const expected = require('crypto')
+        .createHmac('sha256', secret)
+        .update(`${ts}.${JSON.stringify(req.body)}`)
+        .digest('hex');
+      if (expected !== v1) {
+        return res.status(401).json({ error: 'Invalid signature' });
+      }
+    }
+  }
+
+  const { type, data } = req.body as { type: string; data: Record<string, unknown> };
+
+  if (type === 'deposit.completed') {
+    const rcCustomerId = data.customerId as string;
+    const depositId = data.id as string;
+
+    // Find a pending send order for this customer and auto-fire the payout
+    const order = await getPendingOrderForCustomer(rcCustomerId).catch(() => null);
+    if (order) {
+      try {
+        await updateSendOrderStatus(order.order_id, 'cad_received', { rc_deposit_id: depositId });
+
+        const payout = await rcCreatePayout({
+          amount: order.ngn_amount,
+          currency: 'NGN',
+          sourceCurrency: 'CAD',
+          recipient: {
+            accountNumber: order.recipient_account,
+            bankCode: order.recipient_bank_code,
+            accountName: order.recipient_name,
+            bankName: order.recipient_bank_name,
+            currency: 'NGN',
+          },
+          customerId: rcCustomerId,
+          reference: order.order_id,
+        });
+
+        await updateSendOrderStatus(order.order_id, 'payout_initiated', { rc_payout_id: payout.id });
+      } catch (err) {
+        console.error('[RC webhook] Failed to initiate payout for order', order.order_id, err);
+      }
+    }
+  }
+
+  if (type === 'payout.completed') {
+    const reference = data.reference as string | undefined;
+    if (reference) {
+      await updateSendOrderStatus(reference, 'completed', {
+        completed_at: new Date().toISOString(),
+      }).catch(() => {});
+    }
+  }
+
+  if (type === 'payout.failed') {
+    const reference = data.reference as string | undefined;
+    if (reference) {
+      await updateSendOrderStatus(reference, 'failed', {
+        failure_reason: (data.failureReason as string) ?? 'RemitClick payout failed',
+      }).catch(() => {});
+    }
+  }
+
+  res.status(200).json({ received: true });
+});
+
 // ── Admin routes (x-admin-key, no client API key needed) ──────────────────
 app.use('/admin', adminRouter);
 
@@ -794,6 +873,7 @@ app.use('/auth', authLimiter, authRouter);
 // ── B2C user routes (JWT protected) ───────────────────────────────────────
 // userLimiter: 60 req/min per JWT sub — applied to all /me routes
 app.use('/me', requireUser, userLimiter, meRouter);
+app.use('/me/send', requireUser, userLimiter, sendRouter);
 
 // ── B2B protected routes (API key) ────────────────────────────────────────
 app.use(requireApiKey);
